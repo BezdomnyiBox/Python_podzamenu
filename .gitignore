@@ -34,3 +34,17 @@ Thumbs.db
 # ChromeDriver
 chromedriver.exe
 chromedriver
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# ML Cache
+*.pkl
+ml_data_cache.pkl
+historical_data_cache.pkl
+
+# Executables
+*.exe
+*.app

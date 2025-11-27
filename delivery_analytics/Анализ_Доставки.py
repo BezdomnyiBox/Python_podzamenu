@@ -363,7 +363,7 @@ def fetch_data():
             'Разница во времени привоза (мин.)'
         ]
         for col in ['Рассчетное время привоза', 'Время поступления на склад', 'Время заказа позиции']:
-            df[col] = pd.to_datetime(df[col], errors='coerce')
+            df[col] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
         df['Разница во времени привоза (мин.)'] = pd.to_numeric(df['Разница во времени привоза (мин.)'], errors='coerce')
         df['День_недели'] = df['Время заказа позиции'].apply(get_weekday_name)
         df['Час_заказа'] = df['Время заказа позиции'].dt.floor('h').dt.strftime('%H:%M')
@@ -1386,57 +1386,6 @@ frame_table.pack(fill='both', expand=True, padx=15, pady=10)
 
 cols_display = ('Поставщик', 'Склад', 'Заказов', '% вовремя', 'Медианное откл. (мин)', 'Реком. сдвиг')
 tree_analytics = ttk.Treeview(frame_table, columns=cols_display, show='headings', height=18)
-
-style = ttk.Style()
-style.theme_use("clam")
-style.configure("Treeview",
-                background="#ffffff",
-                foreground="#2c3e50",
-                rowheight=28,
-                fieldbackground="#ffffff",
-                font=("Segoe UI", 10)
-                )
-style.configure("Treeview.Heading",
-                font=("Segoe UI", 10, "bold"),
-                background="#ecf0f1",
-                foreground="#2c3e50"
-                )
-style.map("Treeview", background=[('selected', '#3498db')])
-tree_analytics.tag_configure('stable', background='#ffffff', foreground='#27ae60')
-tree_analytics.tag_configure('medium', background='#fff9c4', foreground='#f39c12')
-tree_analytics.tag_configure('unstable', background='#ffebee', foreground='#e74c3c')
-
-for col in cols_display:
-    tree_analytics.heading(col, text=col, command=lambda c=col: set_sort(c))
-    tree_analytics.column(col, width=150, anchor='center')
-
-tree_analytics.pack(side='left', fill='both', expand=True)
-scrollbar = ttk.Scrollbar(frame_table, orient="vertical", command=tree_analytics.yview)
-scrollbar.pack(side='right', fill='y')
-tree_analytics.configure(yscrollcommand=scrollbar.set)
-
-tree_analytics.bind("<Double-1>", lambda e: on_double_click())
-
-frame_bottom = tk.Frame(root, bg="#f5f6fa")
-frame_bottom.pack(pady=15)
-
-btn_export_weekday = tk.Button(frame_bottom, text="📅 Рекомендации\n(по дням недели)", command=export_recommendations_weekday,
-    font=("Segoe UI", 9), width=18, height=2, bg="#e67e22", fg="white")
-btn_export_weekday.pack(side='left', padx=8)
-
-btn_export_problem = tk.Button(frame_bottom, text="⚠️ Проблемные\nпоставщики", command=export_problematic,
-    font=("Segoe UI", 9), width=18, height=2, bg="#e74c3c", fg="white")
-btn_export_problem.pack(side='left', padx=8)
-
-btn_export_early = tk.Button(frame_bottom, text="⏱️ Ранние\nпривозы", command=export_early_deliveries,
-    font=("Segoe UI", 9), width=18, height=2, bg="#2ecc71", fg="white")
-btn_export_early.pack(side='left', padx=8)
-
-btn_schedule_main = tk.Button(frame_bottom, text="📆 Расписание\nпоставок", command=open_schedule_window,
-    font=("Segoe UI", 9), width=18, height=2, bg="#1abc9c", fg="white")
-btn_schedule_main.pack(side='left', padx=8)
-
-root.mainloop()
 
 style = ttk.Style()
 style.theme_use("clam")
