@@ -471,10 +471,18 @@ def update_raw_data_display():
         plan_time = row['Рассчетное время привоза'].strftime('%d.%m.%Y %H:%M') if pd.notna(row.get('Рассчетное время привоза')) else ''
         fact_time = row['Время поступления на склад'].strftime('%d.%m.%Y %H:%M') if pd.notna(row.get('Время поступления на склад')) else ''
         
+        # Получаем дополнительные поля
+        pv = str(row.get('ПВ', ''))[:40] if pd.notna(row.get('ПВ')) else ''
+        brand = str(row.get('Бренд', ''))[:25] if pd.notna(row.get('Бренд')) else ''
+        article = str(row.get('Артикул', ''))[:20] if pd.notna(row.get('Артикул')) else ''
+        
         tree_raw.insert('', 'end', values=(
             row.get('№ заказа', ''),
-            row.get('Поставщик', '')[:30],
-            row.get('Склад', '')[:20],
+            row.get('Поставщик', '')[:25],
+            row.get('Склад', '')[:18],
+            pv,
+            brand,
+            article,
             order_date,
             plan_time,
             fact_time,
@@ -1526,16 +1534,22 @@ lbl_raw_count = tk.Label(raw_header, text="Записей: 0", font=("Segoe UI",
                         bg=COLORS['bg'], fg=COLORS['warning'])
 lbl_raw_count.pack(side='right')
 
-cols_raw = ('№ заказа', 'Поставщик', 'Склад', 'Дата заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
-tree_raw = SortableTreeview(frame_raw, columns=cols_raw, show='headings', height=20)
+# Frame для таблицы с прокрутками
+tree_frame_raw = tk.Frame(frame_raw, bg=COLORS['bg'])
+tree_frame_raw.pack(fill='both', expand=True, padx=10, pady=5)
+
+cols_raw = ('№ заказа', 'Поставщик', 'Склад', 'ПВ', 'Бренд', 'Артикул', 'Дата заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
+tree_raw = SortableTreeview(tree_frame_raw, columns=cols_raw, show='headings', height=20)
 tree_raw.column('№ заказа', width=90)
-tree_raw.column('Поставщик', width=180)
-tree_raw.column('Склад', width=150)
+tree_raw.column('Поставщик', width=150)
+tree_raw.column('Склад', width=120)
+tree_raw.column('ПВ', width=200)
+tree_raw.column('Бренд', width=120)
+tree_raw.column('Артикул', width=100)
 tree_raw.column('Дата заказа', width=130)
 tree_raw.column('План привоза', width=130)
 tree_raw.column('Факт привоза', width=130)
 tree_raw.column('Откл. (мин)', width=90)
-tree_raw.pack(fill='both', expand=True, padx=10, pady=5)
 
 tree_raw.tag_configure('good', foreground=COLORS['success'])
 tree_raw.tag_configure('medium', foreground=COLORS['warning'])
@@ -1550,8 +1564,17 @@ def on_raw_double_click(event):
 
 tree_raw.bind('<Double-1>', on_raw_double_click)
 
-scrollbar_raw = ttk.Scrollbar(frame_raw, orient='vertical', command=tree_raw.yview)
-tree_raw.configure(yscrollcommand=scrollbar_raw.set)
+# Вертикальная и горизонтальная прокрутка
+scrollbar_raw_v = ttk.Scrollbar(tree_frame_raw, orient='vertical', command=tree_raw.yview)
+scrollbar_raw_h = ttk.Scrollbar(tree_frame_raw, orient='horizontal', command=tree_raw.xview)
+tree_raw.configure(yscrollcommand=scrollbar_raw_v.set, xscrollcommand=scrollbar_raw_h.set)
+
+# Размещаем таблицу и прокрутки через grid
+tree_raw.grid(row=0, column=0, sticky='nsew')
+scrollbar_raw_v.grid(row=0, column=1, sticky='ns')
+scrollbar_raw_h.grid(row=1, column=0, sticky='ew')
+tree_frame_raw.grid_rowconfigure(0, weight=1)
+tree_frame_raw.grid_columnconfigure(0, weight=1)
 
 # === FOOTER ===
 footer = tk.Frame(root, bg='#eceff1')
