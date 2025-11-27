@@ -13,6 +13,12 @@ import sqlite3
 import os
 import sys
 
+# Константы
+TIME_TOLERANCE_MINUTES = 179  # Допустимое отклонение времени (±3 часа)
+CRM_BASE_URL = "https://crm.podzamenu.ru"
+ORDER_URL_TEMPLATE = "https://podzamenu.ru/crm/order/{order_id}"
+DAYS_RU = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+
 # Глобальные переменные
 df_original = None
 df_current = None
@@ -21,6 +27,57 @@ sort_reverse = False
 min_orders_filter = 0
 excluded_orders = set()
 modified_rows = set()
+schedule_refresh_callback = None  # Callback для обновления расписания
+
+
+# ----------------------------
+# ОБЩАЯ ФУНКЦИЯ ФИЛЬТРАЦИИ ДАННЫХ
+# ----------------------------
+
+def apply_common_filters(df, start_date, end_date, search_term="", selected_days=None, exclude_orders=None):
+    """
+    Применяет общие фильтры к DataFrame.
+    
+    Args:
+        df: исходный DataFrame
+        start_date: начальная дата
+        end_date: конечная дата (не включительно)
+        search_term: строка поиска по поставщику/складу
+        selected_days: список выбранных дней недели
+        exclude_orders: set заказов для исключения
+    
+    Returns:
+        отфильтрованный DataFrame
+    """
+    if df is None or df.empty:
+        return df
+    
+    df_filtered = df.copy()
+    
+    # Фильтр по дате
+    mask_date = (df_filtered['Время поступления на склад'] >= pd.Timestamp(start_date)) & \
+                (df_filtered['Время поступления на склад'] < pd.Timestamp(end_date))
+    df_filtered = df_filtered[mask_date]
+    
+    # Фильтр по поиску
+    if search_term:
+        search_lower = search_term.lower()
+        mask_search = (
+            df_filtered['Поставщик'].astype(str).str.lower().str.contains(search_lower, na=False) |
+            df_filtered['Склад'].astype(str).str.lower().str.contains(search_lower, na=False)
+        )
+        df_filtered = df_filtered[mask_search]
+    
+    # Фильтр по дням недели
+    if selected_days:
+        df_filtered = df_filtered[df_filtered['День_недели'].isin(selected_days)]
+    
+    # Исключение заказов
+    if exclude_orders:
+        df_filtered = df_filtered[~df_filtered['№ заказа'].isin(exclude_orders)]
+    
+    return df_filtered
+
 
 # ----------------------------
 # РАБОТА С БАЗОЙ ДАННЫХ (SQLite)
@@ -34,81 +91,107 @@ def get_db_path():
         return os.path.join(os.path.dirname(__file__), 'schedule.db')
 
 def init_db():
+    """Инициализация базы данных. Создает таблицы если они не существуют."""
     db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS delivery_schedule (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            supplier TEXT NOT NULL,
-            warehouse TEXT NOT NULL,
-            weekday TEXT NOT NULL,
-            order_deadline TEXT NOT NULL,
-            delivery_target TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(supplier, warehouse, weekday)
-        )
-    ''')
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS schedule_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            supplier TEXT NOT NULL,
-            warehouse TEXT NOT NULL,
-            weekday TEXT NOT NULL,
-            old_order_deadline TEXT,
-            old_delivery_target TEXT,
-            new_order_deadline TEXT NOT NULL,
-            new_delivery_target TEXT NOT NULL,
-            changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS delivery_schedule (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier TEXT NOT NULL,
+                warehouse TEXT NOT NULL,
+                weekday TEXT NOT NULL,
+                order_deadline TEXT NOT NULL,
+                delivery_target TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(supplier, warehouse, weekday)
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS schedule_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier TEXT NOT NULL,
+                warehouse TEXT NOT NULL,
+                weekday TEXT NOT NULL,
+                old_order_deadline TEXT,
+                old_delivery_target TEXT,
+                new_order_deadline TEXT NOT NULL,
+                new_delivery_target TEXT NOT NULL,
+                changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+    except sqlite3.Error as e:
+        messagebox.showerror("Ошибка БД", f"Не удалось инициализировать базу данных:\n{e}")
+    finally:
+        if conn:
+            conn.close()
 
 def get_schedule_filtered(search_term="", selected_weekdays=None):
-    conn = sqlite3.connect(get_db_path())
-    cur = conn.cursor()
-    query = "SELECT supplier, warehouse, weekday, order_deadline, delivery_target FROM delivery_schedule WHERE 1=1"
-    params = []
+    """Получает отфильтрованное расписание из БД."""
+    conn = None
+    try:
+        conn = sqlite3.connect(get_db_path())
+        cur = conn.cursor()
+        query = "SELECT supplier, warehouse, weekday, order_deadline, delivery_target FROM delivery_schedule WHERE 1=1"
+        params = []
 
-    if search_term:
-        query += " AND (supplier LIKE ? OR warehouse LIKE ?)"
-        like_term = f"%{search_term}%"
-        params.extend([like_term, like_term])
+        if search_term:
+            query += " AND (supplier LIKE ? OR warehouse LIKE ?)"
+            like_term = f"%{search_term}%"
+            params.extend([like_term, like_term])
 
-    if selected_weekdays and any(selected_weekdays):
-        placeholders = ','.join('?' * len(selected_weekdays))
-        query += f" AND weekday IN ({placeholders})"
-        params.extend(selected_weekdays)
+        if selected_weekdays and any(selected_weekdays):
+            placeholders = ','.join('?' * len(selected_weekdays))
+            query += f" AND weekday IN ({placeholders})"
+            params.extend(selected_weekdays)
 
-    query += " ORDER BY supplier, warehouse, weekday"
-    cur.execute(query, params)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+        query += " ORDER BY supplier, warehouse, weekday"
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        return rows
+    except sqlite3.Error as e:
+        messagebox.showerror("Ошибка БД", f"Ошибка при чтении расписания:\n{e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
 
 def upsert_schedule_entry(supplier, warehouse, weekday, order_deadline, delivery_target):
+    """Добавляет или обновляет запись расписания с сохранением истории."""
     db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
 
-    cur.execute("SELECT order_deadline, delivery_target FROM delivery_schedule WHERE supplier = ? AND warehouse = ? AND weekday = ?",
-                (supplier, warehouse, weekday))
-    existing = cur.fetchone()
+        cur.execute("SELECT order_deadline, delivery_target FROM delivery_schedule WHERE supplier = ? AND warehouse = ? AND weekday = ?",
+                    (supplier, warehouse, weekday))
+        existing = cur.fetchone()
 
-    cur.execute('''
-        INSERT INTO delivery_schedule (supplier, warehouse, weekday, order_deadline, delivery_target, updated_at)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(supplier, warehouse, weekday) DO UPDATE SET
-            order_deadline = excluded.order_deadline,
-            delivery_target = excluded.delivery_target,
-            updated_at = CURRENT_TIMESTAMP
-    ''', (supplier, warehouse, weekday, order_deadline, delivery_target))
+        cur.execute('''
+            INSERT INTO delivery_schedule (supplier, warehouse, weekday, order_deadline, delivery_target, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(supplier, warehouse, weekday) DO UPDATE SET
+                order_deadline = excluded.order_deadline,
+                delivery_target = excluded.delivery_target,
+                updated_at = CURRENT_TIMESTAMP
+        ''', (supplier, warehouse, weekday, order_deadline, delivery_target))
 
-    if existing:
-        old_order, old_delivery = existing
-        if old_order != order_deadline or old_delivery != delivery_target:
+        if existing:
+            old_order, old_delivery = existing
+            if old_order != order_deadline or old_delivery != delivery_target:
+                cur.execute('''
+                    INSERT INTO schedule_history (
+                        supplier, warehouse, weekday,
+                        old_order_deadline, old_delivery_target,
+                        new_order_deadline, new_delivery_target,
+                        changed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (supplier, warehouse, weekday, old_order, old_delivery, order_deadline, delivery_target))
+        else:
             cur.execute('''
                 INSERT INTO schedule_history (
                     supplier, warehouse, weekday,
@@ -116,32 +199,37 @@ def upsert_schedule_entry(supplier, warehouse, weekday, order_deadline, delivery
                     new_order_deadline, new_delivery_target,
                     changed_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (supplier, warehouse, weekday, old_order, old_delivery, order_deadline, delivery_target))
-    else:
-        cur.execute('''
-            INSERT INTO schedule_history (
-                supplier, warehouse, weekday,
-                old_order_deadline, old_delivery_target,
-                new_order_deadline, new_delivery_target,
-                changed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (supplier, warehouse, weekday, None, None, order_deadline, delivery_target))
+            ''', (supplier, warehouse, weekday, None, None, order_deadline, delivery_target))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        messagebox.showerror("Ошибка БД", f"Не удалось сохранить расписание:\n{e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 def get_history(supplier, warehouse):
-    conn = sqlite3.connect(get_db_path())
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT changed_at, weekday, old_order_deadline, old_delivery_target, new_order_deadline, new_delivery_target
-        FROM schedule_history
-        WHERE supplier = ? AND warehouse = ?
-        ORDER BY changed_at DESC
-    ''', (supplier, warehouse))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    """Получает историю изменений расписания для поставщика и склада."""
+    conn = None
+    try:
+        conn = sqlite3.connect(get_db_path())
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT changed_at, weekday, old_order_deadline, old_delivery_target, new_order_deadline, new_delivery_target
+            FROM schedule_history
+            WHERE supplier = ? AND warehouse = ?
+            ORDER BY changed_at DESC
+        ''', (supplier, warehouse))
+        rows = cur.fetchall()
+        return rows
+    except sqlite3.Error as e:
+        messagebox.showerror("Ошибка БД", f"Ошибка при чтении истории:\n{e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
 
 # Инициализация БД при старте
 init_db()
@@ -156,16 +244,15 @@ def open_day_filter_window(parent, current_selection, callback):
     dialog.geometry("250x300")
     dialog.transient(parent)
     dialog.grab_set()
-    days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    day_vars = {day: tk.BooleanVar(value=(day in current_selection)) for day in days_ru}
+    day_vars = {day: tk.BooleanVar(value=(day in current_selection)) for day in DAYS_RU}
     def toggle_all():
         state = var_all.get()
         for v in day_vars.values():
             v.set(state)
-    var_all = tk.BooleanVar(value=len(current_selection) == len(days_ru))
+    var_all = tk.BooleanVar(value=len(current_selection) == len(DAYS_RU))
     chk_all = tk.Checkbutton(dialog, text="Все дни", variable=var_all, command=toggle_all)
     chk_all.pack(anchor='w', padx=10, pady=5)
-    for day in days_ru:
+    for day in DAYS_RU:
         chk = tk.Checkbutton(dialog, text=day, variable=day_vars[day])
         chk.pack(anchor='w', padx=20)
     def apply():
@@ -240,7 +327,7 @@ def fetch_data():
     end_date = cal_end.get_date()
 
     url = (
-        f"https://crm.podzamenu.ru/logistic/delivery_statistic"
+        f"{CRM_BASE_URL}/logistic/delivery_statistic"
         f"?fromDate={start_date.strftime('%Y-%m-%d')}"
         f"&toDate={end_date.strftime('%Y-%m-%d')}"
     )
@@ -309,8 +396,7 @@ def fetch_data():
 def get_weekday_name(dt):
     if pd.isna(dt):
         return ""
-    days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    return days[dt.weekday()]
+    return DAYS_RU[dt.weekday()]
 
 def format_datetime(dt):
     if pd.isna(dt):
@@ -327,27 +413,23 @@ def refresh_analysis():
         tree_analytics.delete(item)
     if df_current is None:
         return
+    
     start_date = cal_start.get_date()
     end_date = cal_end.get_date() + timedelta(days=1)
-    df_filtered = df_current.copy()
-    mask_date = (df_filtered['Время поступления на склад'] >= pd.Timestamp(start_date)) & \
-                (df_filtered['Время поступления на склад'] < pd.Timestamp(end_date))
-    df_filtered = df_filtered[mask_date]
-    search_term = entry_search.get().strip().lower()
-    if search_term:
-        mask_search = (
-                df_filtered['Поставщик'].astype(str).str.lower().str.contains(search_term, na=False) |
-                df_filtered['Склад'].astype(str).str.lower().str.contains(search_term, na=False)
-        )
-        df_filtered = df_filtered[mask_search]
+    search_term = entry_search.get().strip()
     selected_days = [day for day, var in day_filter_vars.items() if var.get()]
-    if selected_days:
-        df_filtered = df_filtered[df_filtered['День_недели'].isin(selected_days)]
-    if df_filtered.empty:
+    
+    df_filtered = apply_common_filters(
+        df_current, start_date, end_date, 
+        search_term=search_term, 
+        selected_days=selected_days
+    )
+    
+    if df_filtered is None or df_filtered.empty:
         return
     stats = df_filtered.groupby(['Поставщик', 'Склад']).agg(
         Заказов=('№ заказа', 'nunique'),
-        Процент_вовремя=('Разница во времени привоза (мин.)', lambda x: (x.between(-179, 179).sum() / len(x)) * 100),
+        Процент_вовремя=('Разница во времени привоза (мин.)', lambda x: (x.between(-TIME_TOLERANCE_MINUTES, TIME_TOLERANCE_MINUTES).sum() / len(x)) * 100),
         Медианное_отклонение=('Разница во времени привоза (мин.)', 'median')
     ).round(1).reset_index()
     if min_orders_filter > 0:
@@ -355,13 +437,7 @@ def refresh_analysis():
     def recommend_shift(x):
         if pd.isna(x):
             return 0
-        # if x > 179:
-        #     return round(x)
-        # elif x < -179:
-        #     return round(x)
-        else:
-            return round(x)
-            return 0
+        return round(x)
     stats['Рекоменд_сдвиг'] = stats['Медианное_отклонение'].apply(recommend_shift)
     if sort_column:
         col_map = {
@@ -425,29 +501,25 @@ def export_recommendations_weekday():
     if df_current is None:
         messagebox.showwarning("Внимание", "Нет данных.")
         return
+    
     start_date = cal_start.get_date()
     end_date = cal_end.get_date() + timedelta(days=1)
-    df_filtered = df_current[
-        (df_current['Время поступления на склад'] >= pd.Timestamp(start_date)) &
-        (df_current['Время поступления на склад'] < pd.Timestamp(end_date))
-    ]
-    search_term = entry_search.get().strip().lower()
-    if search_term:
-        mask_search = (
-                df_filtered['Поставщик'].astype(str).str.lower().str.contains(search_term, na=False) |
-                df_filtered['Склад'].astype(str).str.lower().str.contains(search_term, na=False)
-        )
-        df_filtered = df_filtered[mask_search]
+    search_term = entry_search.get().strip()
     selected_days = [day for day, var in day_filter_vars.items() if var.get()]
-    if selected_days:
-        df_filtered = df_filtered[df_filtered['День_недели'].isin(selected_days)]
-    if df_filtered.empty:
+    
+    df_filtered = apply_common_filters(
+        df_current, start_date, end_date,
+        search_term=search_term,
+        selected_days=selected_days
+    )
+    
+    if df_filtered is None or df_filtered.empty:
         messagebox.showwarning("Внимание", "Нет данных для экспорта.")
         return
     grouped = df_filtered.groupby(['Поставщик', 'Склад', 'День_недели'])['Разница во времени привоза (мин.)']
     stats = grouped.agg(
         Заказов_в_день=('size'),
-        Процент_вовремя=lambda x: (x.between(-179, 179).sum() / len(x)) * 100,
+        Процент_вовремя=lambda x: (x.between(-TIME_TOLERANCE_MINUTES, TIME_TOLERANCE_MINUTES).sum() / len(x)) * 100,
         Медианное_отклонение=('median')
     ).round(1).reset_index()
     total_orders = df_filtered.groupby(['Поставщик', 'Склад']).size().reset_index(name='Всего_заказов')
@@ -456,9 +528,9 @@ def export_recommendations_weekday():
     def get_shift(x):
         if pd.isna(x):
             return 0
-        if x > 179:
+        if x > TIME_TOLERANCE_MINUTES:
             return round(x)
-        elif x < -179:
+        elif x < -TIME_TOLERANCE_MINUTES:
             return round(x)
         else:
             return 0
@@ -545,33 +617,28 @@ def export_problematic():
     threshold_pct, threshold_day = dialog.result
     start_date = cal_start.get_date()
     end_date = cal_end.get_date() + timedelta(days=1)
-    df_filtered = df_current[
-        (df_current['Время поступления на склад'] >= pd.Timestamp(start_date)) &
-        (df_current['Время поступления на склад'] < pd.Timestamp(end_date))
-    ]
-    search_term = entry_search.get().strip().lower()
-    if search_term:
-        mask_search = (
-                df_filtered['Поставщик'].astype(str).str.lower().str.contains(search_term, na=False) |
-                df_filtered['Склад'].astype(str).str.lower().str.contains(search_term, na=False)
-        )
-        df_filtered = df_filtered[mask_search]
+    search_term = entry_search.get().strip()
     selected_days = [day for day, var in day_filter_vars.items() if var.get()]
-    if selected_days:
-        df_filtered = df_filtered[df_filtered['День_недели'].isin(selected_days)]
-    if df_filtered.empty:
+    
+    df_filtered = apply_common_filters(
+        df_current, start_date, end_date,
+        search_term=search_term,
+        selected_days=selected_days
+    )
+    
+    if df_filtered is None or df_filtered.empty:
         messagebox.showwarning("Внимание", "Нет данных.")
         return
     stats = df_filtered.groupby(['Поставщик', 'Склад']).agg(
         Заказы=('№ заказа', 'nunique'),
-        Процент_вовремя=('Разница во времени привоза (мин.)', lambda x: (x.between(-179, 179).sum() / len(x)) * 100),
+        Процент_вовремя=('Разница во времени привоза (мин.)', lambda x: (x.between(-TIME_TOLERANCE_MINUTES, TIME_TOLERANCE_MINUTES).sum() / len(x)) * 100),
         Медианное_отклонение=('Разница во времени привоза (мин.)', 'median')
     ).round(1).reset_index()
     problematic = stats[stats['Процент_вовремя'] < threshold_pct].copy()
     if problematic.empty:
         messagebox.showinfo("Информация", f"Нет проблемных поставщиков (порог: <{threshold_pct}% вовремя).")
         return
-    late_orders = df_filtered[~df_filtered['Разница во времени привоза (мин.)'].between(-179, 179)]
+    late_orders = df_filtered[~df_filtered['Разница во времени привоза (мин.)'].between(-TIME_TOLERANCE_MINUTES, TIME_TOLERANCE_MINUTES)]
     if not late_orders.empty:
         late_by_day = late_orders.groupby(['Поставщик', 'Склад', 'День_недели']).size().reset_index(name='Опозданий')
         total_late = late_orders.groupby(['Поставщик', 'Склад']).size().reset_index(name='Всего_опозданий')
@@ -644,21 +711,22 @@ def show_early_deliveries_in_app():
     if df_current is None:
         messagebox.showwarning("Внимание", "Нет данных.")
         return
+    
     start_date = cal_start.get_date()
     end_date = cal_end.get_date() + timedelta(days=1)
-    df_filtered = df_current.copy()
-    mask_date = (df_filtered['Время поступления на склад'] >= pd.Timestamp(start_date)) & \
-                (df_filtered['Время поступления на склад'] < pd.Timestamp(end_date))
-    df_filtered = df_filtered[mask_date]
-    search_term = entry_search.get().strip().lower()
-    if search_term:
-        mask_search = (
-                df_filtered['Поставщик'].astype(str).str.lower().str.contains(search_term, na=False) |
-                df_filtered['Склад'].astype(str).str.lower().str.contains(search_term, na=False)
-        )
-        df_filtered = df_filtered[mask_search]
-    df_filtered = df_filtered[~df_filtered['№ заказа'].isin(excluded_orders)]
-    early_df = df_filtered[df_filtered['Разница во времени привоза (мин.)'] < -179].copy()
+    search_term = entry_search.get().strip()
+    
+    df_filtered = apply_common_filters(
+        df_current, start_date, end_date,
+        search_term=search_term,
+        exclude_orders=excluded_orders
+    )
+    
+    if df_filtered is None or df_filtered.empty:
+        messagebox.showwarning("Внимание", "Нет данных после фильтрации.")
+        return
+    
+    early_df = df_filtered[df_filtered['Разница во времени привоза (мин.)'] < -TIME_TOLERANCE_MINUTES].copy()
     if early_df.empty:
         messagebox.showinfo("Информация", "Нет ранних привозов.")
         return
@@ -682,7 +750,7 @@ def show_early_deliveries_in_app():
 
     frame_filters = tk.Frame(top)
     frame_filters.pack(pady=5, fill='x')
-    selected_days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    selected_days = DAYS_RU.copy()
     selected_hours = all_hours.copy()
     def update_days(selected):
         nonlocal selected_days
@@ -842,7 +910,7 @@ def show_supplier_details_early(supplier, warehouse, day, hour):
         if item:
             order_id = tree_det.item(item[0])['values'][0]
             try:
-                url = f"https://podzamenu.ru/crm/order/{order_id}"
+                url = ORDER_URL_TEMPLATE.format(order_id=order_id)
                 webbrowser.open_new_tab(url)
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось открыть ссылку:\n{e}")
@@ -878,27 +946,23 @@ def _export_early_deliveries_file():
     if df_current is None:
         messagebox.showwarning("Внимание", "Нет данных.")
         return
+    
     start_date = cal_start.get_date()
     end_date = cal_end.get_date() + timedelta(days=1)
-    df_filtered = df_current[
-        (df_current['Время поступления на склад'] >= pd.Timestamp(start_date)) &
-        (df_current['Время поступления на склад'] < pd.Timestamp(end_date))
-    ]
-    search_term = entry_search.get().strip().lower()
-    if search_term:
-        mask_search = (
-                df_filtered['Поставщик'].astype(str).str.lower().str.contains(search_term, na=False) |
-                df_filtered['Склад'].astype(str).str.lower().str.contains(search_term, na=False)
-        )
-        df_filtered = df_filtered[mask_search]
+    search_term = entry_search.get().strip()
     selected_days = [day for day, var in day_filter_vars.items() if var.get()]
-    if selected_days:
-        df_filtered = df_filtered[df_filtered['День_недели'].isin(selected_days)]
-    if df_filtered.empty:
+    
+    df_filtered = apply_common_filters(
+        df_current, start_date, end_date,
+        search_term=search_term,
+        selected_days=selected_days,
+        exclude_orders=excluded_orders
+    )
+    
+    if df_filtered is None or df_filtered.empty:
         messagebox.showwarning("Внимание", "Нет данных.")
         return
-    df_filtered = df_filtered[~df_filtered['№ заказа'].isin(excluded_orders)]
-    early_df = df_filtered[df_filtered['Разница во времени привоза (мин.)'] < -179].copy()
+    early_df = df_filtered[df_filtered['Разница во времени привоза (мин.)'] < -TIME_TOLERANCE_MINUTES].copy()
     if early_df.empty:
         messagebox.showinfo("Информация", "Нет ранних привозов.")
         return
@@ -913,8 +977,8 @@ def _export_early_deliveries_file():
     result_df['%_ранних'] = (result_df['Ранних_заказов'] / result_df['Всего_заказов'] * 100).round(1)
     def calc_stats(group):
         total = len(group)
-        on_time = (group['Разница во времени привоза (мин.)'].between(-179, 179).sum() / total * 100) if total > 0 else 0
-        late = (group['Разница во времени привоза (мин.)'] > 179).sum() / total * 100 if total > 0 else 0
+        on_time = (group['Разница во времени привоза (мин.)'].between(-TIME_TOLERANCE_MINUTES, TIME_TOLERANCE_MINUTES).sum() / total * 100) if total > 0 else 0
+        late = (group['Разница во времени привоза (мин.)'] > TIME_TOLERANCE_MINUTES).sum() / total * 100 if total > 0 else 0
         return pd.Series({'%_вовремя': round(on_time, 1), '%_опозданий': round(late, 1)})
     stats_df = df_filtered.groupby(['Поставщик', 'Склад', 'День_недели', 'Час_заказа']).apply(calc_stats).reset_index()
     result_df = result_df.merge(stats_df, on=['Поставщик', 'Склад', 'День_недели', 'Час_заказа'], how='left')
@@ -1018,13 +1082,12 @@ def open_edit_schedule_window(supplier=None, warehouse=None, weekday=None):
     ent_warehouse.pack()
     if warehouse: ent_warehouse.insert(0, warehouse)
     tk.Label(edit_win, text="Дни недели:").pack(pady=5)
-    days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    day_vars = {day: tk.BooleanVar() for day in days_ru}
+    day_vars = {day: tk.BooleanVar() for day in DAYS_RU}
     if weekday: day_vars[weekday].set(True)
     else: [v.set(True) for v in day_vars.values()]
     days_frame = tk.Frame(edit_win)
     days_frame.pack()
-    for day in days_ru:
+    for day in DAYS_RU:
         tk.Checkbutton(days_frame, text=day, variable=day_vars[day]).pack(side='left', padx=5)
     tk.Label(edit_win, text="Заказ до (ЧЧ:ММ):").pack(pady=5)
     ent_order = tk.Entry(edit_win, width=10)
@@ -1057,12 +1120,13 @@ def open_edit_schedule_window(supplier=None, warehouse=None, weekday=None):
             upsert_schedule_entry(sup, wh, day, order_time, delivery_time)
         messagebox.showinfo("Успех", "Расписание сохранено!")
         edit_win.destroy()
-        if 'schedule_tree' in globals():
-            refresh_schedule_view()
+        # Вызываем callback для обновления таблицы расписания
+        if schedule_refresh_callback is not None:
+            schedule_refresh_callback()
     tk.Button(edit_win, text="Сохранить", command=save_schedule, bg="#2ecc71", fg="white").pack(pady=15)
 
 def open_schedule_window():
-    global schedule_tree, schedule_search, day_filters_vars
+    global schedule_tree, schedule_search, day_filters_vars, schedule_refresh_callback
     top = tk.Toplevel()
     top.title("Расписание поставок")
     top.geometry("1000x650")
@@ -1081,12 +1145,21 @@ def open_schedule_window():
         data = get_schedule_filtered(search_term=search_term, selected_weekdays=selected_days)
         for row in data:
             schedule_tree.insert('', 'end', values=row)
+    
+    # Устанавливаем callback для обновления из других окон
+    schedule_refresh_callback = refresh_schedule_view
+    
+    # Очищаем callback при закрытии окна
+    def on_closing():
+        global schedule_refresh_callback
+        schedule_refresh_callback = None
+        top.destroy()
+    top.protocol("WM_DELETE_WINDOW", on_closing)
 
     frame_days = tk.Frame(top)
     frame_days.pack(pady=5, fill='x', padx=10)
     tk.Label(frame_days, text="Дни недели:").pack(side='left')
-    days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    day_filters_vars = {day: tk.BooleanVar(value=True) for day in days_ru}
+    day_filters_vars = {day: tk.BooleanVar(value=True) for day in DAYS_RU}
 
     def toggle_all_days():
         state = var_all_days.get()
@@ -1096,7 +1169,7 @@ def open_schedule_window():
 
     var_all_days = tk.BooleanVar(value=True)
     tk.Checkbutton(frame_days, text="Все", variable=var_all_days, command=toggle_all_days).pack(side='left', padx=5)
-    for day in days_ru:
+    for day in DAYS_RU:
         chk = tk.Checkbutton(frame_days, text=day[:2], variable=day_filters_vars[day], command=refresh_schedule_view)
         chk.pack(side='left', padx=2)
 
@@ -1137,17 +1210,17 @@ def show_supplier_details(supplier, warehouse):
     global day_filter_vars
     start_date = cal_start.get_date()
     end_date = cal_end.get_date() + timedelta(days=1)
-    search_term = entry_search.get().strip().lower()
-    df_filtered = df_current.copy()
-    mask_date = (df_filtered['Время поступления на склад'] >= pd.Timestamp(start_date)) & \
-                (df_filtered['Время поступления на склад'] < pd.Timestamp(end_date))
-    df_filtered = df_filtered[mask_date]
-    if search_term:
-        mask_search = (
-                df_filtered['Поставщик'].astype(str).str.lower().str.contains(search_term, na=False) |
-                df_filtered['Склад'].astype(str).str.lower().str.contains(search_term, na=False)
-        )
-        df_filtered = df_filtered[mask_search]
+    search_term = entry_search.get().strip()
+    
+    df_filtered = apply_common_filters(
+        df_current, start_date, end_date,
+        search_term=search_term
+    )
+    
+    if df_filtered is None or df_filtered.empty:
+        messagebox.showinfo("Информация", "Нет данных.")
+        return
+    
     mask = (df_filtered['Поставщик'] == supplier) & (df_filtered['Склад'] == warehouse)
     df_subset = df_filtered[mask].copy()
     if df_subset.empty:
@@ -1215,7 +1288,7 @@ def show_supplier_details(supplier, warehouse):
         if item:
             order_id = tree.item(item[0])['values'][0]
             try:
-                url = f"https://podzamenu.ru/crm/order/{order_id}"
+                url = ORDER_URL_TEMPLATE.format(order_id=order_id)
                 webbrowser.open_new_tab(url)
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось открыть ссылку:\n{e}")
@@ -1296,8 +1369,7 @@ btn_min_orders.pack(side='left', padx=10)
 frame_days = tk.Frame(root, bg="#f5f6fa")
 frame_days.pack(pady=5)
 tk.Label(frame_days, text="Дни недели:", bg="#f5f6fa", font=("Segoe UI", 10)).pack(side='left', padx=5)
-days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-day_filter_vars = {day: tk.BooleanVar(value=True) for day in days_ru}
+day_filter_vars = {day: tk.BooleanVar(value=True) for day in DAYS_RU}
 def toggle_all_days():
     state = var_all_days.get()
     for v in day_filter_vars.values():
@@ -1305,7 +1377,7 @@ def toggle_all_days():
 var_all_days = tk.BooleanVar(value=True)
 chk_all_days = tk.Checkbutton(frame_days, text="Все дни", variable=var_all_days, command=toggle_all_days)
 chk_all_days.pack(side='left', padx=5)
-for day in days_ru:
+for day in DAYS_RU:
     chk = tk.Checkbutton(frame_days, text=day[:2], variable=day_filter_vars[day], command=refresh_analysis)
     chk.pack(side='left', padx=2)
 
@@ -1314,6 +1386,57 @@ frame_table.pack(fill='both', expand=True, padx=15, pady=10)
 
 cols_display = ('Поставщик', 'Склад', 'Заказов', '% вовремя', 'Медианное откл. (мин)', 'Реком. сдвиг')
 tree_analytics = ttk.Treeview(frame_table, columns=cols_display, show='headings', height=18)
+
+style = ttk.Style()
+style.theme_use("clam")
+style.configure("Treeview",
+                background="#ffffff",
+                foreground="#2c3e50",
+                rowheight=28,
+                fieldbackground="#ffffff",
+                font=("Segoe UI", 10)
+                )
+style.configure("Treeview.Heading",
+                font=("Segoe UI", 10, "bold"),
+                background="#ecf0f1",
+                foreground="#2c3e50"
+                )
+style.map("Treeview", background=[('selected', '#3498db')])
+tree_analytics.tag_configure('stable', background='#ffffff', foreground='#27ae60')
+tree_analytics.tag_configure('medium', background='#fff9c4', foreground='#f39c12')
+tree_analytics.tag_configure('unstable', background='#ffebee', foreground='#e74c3c')
+
+for col in cols_display:
+    tree_analytics.heading(col, text=col, command=lambda c=col: set_sort(c))
+    tree_analytics.column(col, width=150, anchor='center')
+
+tree_analytics.pack(side='left', fill='both', expand=True)
+scrollbar = ttk.Scrollbar(frame_table, orient="vertical", command=tree_analytics.yview)
+scrollbar.pack(side='right', fill='y')
+tree_analytics.configure(yscrollcommand=scrollbar.set)
+
+tree_analytics.bind("<Double-1>", lambda e: on_double_click())
+
+frame_bottom = tk.Frame(root, bg="#f5f6fa")
+frame_bottom.pack(pady=15)
+
+btn_export_weekday = tk.Button(frame_bottom, text="📅 Рекомендации\n(по дням недели)", command=export_recommendations_weekday,
+    font=("Segoe UI", 9), width=18, height=2, bg="#e67e22", fg="white")
+btn_export_weekday.pack(side='left', padx=8)
+
+btn_export_problem = tk.Button(frame_bottom, text="⚠️ Проблемные\nпоставщики", command=export_problematic,
+    font=("Segoe UI", 9), width=18, height=2, bg="#e74c3c", fg="white")
+btn_export_problem.pack(side='left', padx=8)
+
+btn_export_early = tk.Button(frame_bottom, text="⏱️ Ранние\nпривозы", command=export_early_deliveries,
+    font=("Segoe UI", 9), width=18, height=2, bg="#2ecc71", fg="white")
+btn_export_early.pack(side='left', padx=8)
+
+btn_schedule_main = tk.Button(frame_bottom, text="📆 Расписание\nпоставок", command=open_schedule_window,
+    font=("Segoe UI", 9), width=18, height=2, bg="#1abc9c", fg="white")
+btn_schedule_main.pack(side='left', padx=8)
+
+root.mainloop()
 
 style = ttk.Style()
 style.theme_use("clam")
