@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Databases
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Excel temp files
+~$*.xlsx
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ChromeDriver
+chromedriver.exe
+chromedriver

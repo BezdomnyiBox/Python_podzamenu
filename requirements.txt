@@ -1,0 +1,14 @@
+# Delivery Analytics & Logistics
+pandas>=2.0.0
+openpyxl>=3.1.0
+tkcalendar>=1.6.0
+requests>=2.31.0
+
+# Web Scraping & Automation
+selenium>=4.15.0
+undetected-chromedriver>=3.5.0
+beautifulsoup4>=4.12.0
+
+# GUI (встроено в Python, но для справки)
+# tkinter - стандартная библиотека Python
+
