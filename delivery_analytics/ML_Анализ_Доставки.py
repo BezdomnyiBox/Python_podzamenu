@@ -84,6 +84,13 @@ def get_weekday_name(dt):
     return DAYS_RU[dt.weekday()]
 
 
+def open_order_in_crm(order_id):
+    """Открыть заказ в CRM в браузере"""
+    if order_id:
+        url = f"https://podzamenu.ru/crm/order/{order_id}"
+        webbrowser.open(url)
+
+
 # ========================================
 # СОРТИРУЕМАЯ ТАБЛИЦА
 # ========================================
@@ -150,6 +157,7 @@ def fetch_data():
                 is_model_trained = False
                 
                 root.after(0, update_stats_display)
+                root.after(0, update_raw_data_display)
                 root.after(0, lambda: update_status(f"✅ Загружено {len(df):,} записей", "success"))
                 root.after(0, train_model_async)
         except Exception as e:
@@ -255,6 +263,7 @@ def fetch_historical_data():
                 df.to_pickle(cache_path)
                 
                 root.after(0, update_stats_display)
+                root.after(0, update_raw_data_display)
                 root.after(0, lambda: update_status(f"✅ Загружено {len(df):,} записей. Сохранено в кэш.", "success"))
                 root.after(0, lambda: messagebox.showinfo(
                     "✅ Готово", 
@@ -296,6 +305,7 @@ def load_cached_data():
         
         progress_bar.stop()
         update_stats_display()
+        update_raw_data_display()
         update_status(f"✅ Загружено {len(df):,} записей из кэша ({cache_date.strftime('%d.%m.%Y')})", "success")
         
         train_model_async()
@@ -435,6 +445,47 @@ def update_recommendations_display():
     lbl_rec_count.config(text=f"Рекомендаций: {len(recommendations)}")
 
 
+def update_raw_data_display():
+    """Обновление таблицы сырых данных"""
+    if df_current is None:
+        return
+    
+    for item in tree_raw.get_children():
+        tree_raw.delete(item)
+    
+    # Показываем последние 1000 записей
+    display_df = df_current.sort_values('Время заказа позиции', ascending=False).head(1000)
+    
+    for _, row in display_df.iterrows():
+        dev = row.get('Разница во времени привоза (мин.)', 0)
+        tags = ()
+        if pd.notna(dev):
+            if abs(dev) <= 30:
+                tags = ('good',)
+            elif abs(dev) <= 60:
+                tags = ('medium',)
+            else:
+                tags = ('bad',)
+        
+        order_date = row['Время заказа позиции'].strftime('%d.%m.%Y %H:%M') if pd.notna(row.get('Время заказа позиции')) else ''
+        plan_time = row['Рассчетное время привоза'].strftime('%d.%m.%Y %H:%M') if pd.notna(row.get('Рассчетное время привоза')) else ''
+        fact_time = row['Время поступления на склад'].strftime('%d.%m.%Y %H:%M') if pd.notna(row.get('Время поступления на склад')) else ''
+        
+        tree_raw.insert('', 'end', values=(
+            row.get('№ заказа', ''),
+            row.get('Поставщик', '')[:30],
+            row.get('Склад', '')[:20],
+            order_date,
+            plan_time,
+            fact_time,
+            f"{dev:+.0f}" if pd.notna(dev) else ''
+        ), tags=tags)
+    
+    total = len(df_current)
+    shown = min(total, 1000)
+    lbl_raw_count.config(text=f"Записей: {shown:,} из {total:,}")
+
+
 def update_status(text, status_type="info"):
     """Обновление статус-бара"""
     colors = {
@@ -535,6 +586,18 @@ def show_orders_for_day(supplier, warehouse, day, parent_df):
     tree.tag_configure('good', foreground=COLORS['success'])
     tree.tag_configure('medium', foreground=COLORS['warning'])
     tree.tag_configure('bad', foreground=COLORS['danger'])
+    
+    # Двойной клик — открыть заказ в CRM
+    def on_click(event):
+        selected = tree.selection()
+        if selected:
+            order_id = tree.item(selected[0])['values'][0]
+            open_order_in_crm(order_id)
+    
+    tree.bind('<Double-1>', on_click)
+    
+    tk.Label(win, text="💡 Двойной клик на заказ — открыть в CRM", 
+            font=("Segoe UI", 9), fg=COLORS['text_light'], bg=COLORS['bg']).pack(pady=5)
 
 
 def show_orders_for_hour(supplier, warehouse, hour, parent_df):
@@ -592,6 +655,18 @@ def show_orders_for_hour(supplier, warehouse, hour, parent_df):
     tree.tag_configure('good', foreground=COLORS['success'])
     tree.tag_configure('medium', foreground=COLORS['warning'])
     tree.tag_configure('bad', foreground=COLORS['danger'])
+    
+    # Двойной клик — открыть заказ в CRM
+    def on_click(event):
+        selected = tree.selection()
+        if selected:
+            order_id = tree.item(selected[0])['values'][0]
+            open_order_in_crm(order_id)
+    
+    tree.bind('<Double-1>', on_click)
+    
+    tk.Label(win, text="💡 Двойной клик на заказ — открыть в CRM", 
+            font=("Segoe UI", 9), fg=COLORS['text_light'], bg=COLORS['bg']).pack(pady=5)
 
 
 def show_supplier_details(supplier, warehouse):
@@ -891,10 +966,10 @@ def create_supplier_charts(parent, df, supplier):
 
 
 def show_recommendation_details(rec):
-    """Детали рекомендации"""
+    """Детали рекомендации с примерами заказов"""
     win = tk.Toplevel(root)
     win.title(f"💡 Рекомендация: {rec.supplier}")
-    win.geometry("700x600")
+    win.geometry("800x750")
     win.configure(bg=COLORS['bg'])
     
     # Заголовок
@@ -946,9 +1021,71 @@ def show_recommendation_details(rec):
         text=rec.reason,
         font=("Segoe UI", 10),
         bg=COLORS['bg'],
-        wraplength=620,
+        wraplength=720,
         justify='left'
     ).pack(padx=15, pady=15)
+    
+    # Примеры заказов
+    if hasattr(rec, 'example_orders') and rec.example_orders:
+        examples_frame = tk.LabelFrame(win, text="📦 Примеры заказов (последние)", font=("Segoe UI", 10, "bold"), bg=COLORS['bg'])
+        examples_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Таблица примеров
+        cols = ('№ заказа', 'Дата', 'Время заказа', 'План', 'Факт', 'Откл.')
+        tree_examples = ttk.Treeview(examples_frame, columns=cols, show='headings', height=5)
+        
+        tree_examples.column('№ заказа', width=100)
+        tree_examples.column('Дата', width=100)
+        tree_examples.column('Время заказа', width=100)
+        tree_examples.column('План', width=80)
+        tree_examples.column('Факт', width=80)
+        tree_examples.column('Откл.', width=80)
+        
+        for col in cols:
+            tree_examples.heading(col, text=col)
+        
+        for ex in rec.example_orders:
+            dev = ex.get('deviation', 0)
+            tags = ()
+            if abs(dev) <= 30:
+                tags = ('good',)
+            elif abs(dev) <= 60:
+                tags = ('medium',)
+            else:
+                tags = ('bad',)
+            
+            tree_examples.insert('', 'end', values=(
+                ex.get('order_id', ''),
+                ex.get('order_date', ''),
+                ex.get('order_time', ''),
+                ex.get('plan_time', ''),
+                ex.get('fact_time', ''),
+                f"{dev:+d} мин" if dev else ''
+            ), tags=tags)
+        
+        tree_examples.tag_configure('good', foreground=COLORS['success'])
+        tree_examples.tag_configure('medium', foreground=COLORS['warning'])
+        tree_examples.tag_configure('bad', foreground=COLORS['danger'])
+        
+        tree_examples.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Подсказка для клика
+        tk.Label(
+            examples_frame,
+            text="💡 Двойной клик на заказ — открыть в CRM",
+            font=("Segoe UI", 9),
+            fg=COLORS['text_light'],
+            bg=COLORS['bg']
+        ).pack(pady=5)
+        
+        # Обработчик двойного клика
+        def on_example_double_click(event):
+            selected = tree_examples.selection()
+            if selected:
+                order_id = tree_examples.item(selected[0])['values'][0]
+                open_order_in_crm(order_id)
+        
+        tree_examples.bind('<Double-1>', on_example_double_click)
     
     # Кнопки
     btn_frame = tk.Frame(win, bg=COLORS['bg'])
@@ -1371,6 +1508,50 @@ tree_rec.tag_configure('med', background='#fff9c4')
 tree_rec.tag_configure('low', background='#ffecb3')
 
 tree_rec.bind('<Double-1>', on_rec_double_click)
+
+# --- Вкладка 3: Сырые данные ---
+frame_raw = ttk.Frame(notebook)
+notebook.add(frame_raw, text="📄 Сырые данные")
+
+raw_info = tk.Frame(frame_raw, bg='#fff3e0')
+raw_info.pack(fill='x', padx=10, pady=10)
+
+tk.Label(raw_info, text="📄 Исходные данные после импорта из CRM.\n"
+        "Двойной клик на заказ — открыть в CRM. Кликните на заголовок столбца для сортировки.",
+        font=("Segoe UI", 9), bg='#fff3e0', fg=COLORS['text'], justify='left').pack(padx=10, pady=8)
+
+raw_header = tk.Frame(frame_raw, bg=COLORS['bg'])
+raw_header.pack(fill='x', padx=10)
+lbl_raw_count = tk.Label(raw_header, text="Записей: 0", font=("Segoe UI", 9, "bold"),
+                        bg=COLORS['bg'], fg=COLORS['warning'])
+lbl_raw_count.pack(side='right')
+
+cols_raw = ('№ заказа', 'Поставщик', 'Склад', 'Дата заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
+tree_raw = SortableTreeview(frame_raw, columns=cols_raw, show='headings', height=20)
+tree_raw.column('№ заказа', width=90)
+tree_raw.column('Поставщик', width=180)
+tree_raw.column('Склад', width=150)
+tree_raw.column('Дата заказа', width=130)
+tree_raw.column('План привоза', width=130)
+tree_raw.column('Факт привоза', width=130)
+tree_raw.column('Откл. (мин)', width=90)
+tree_raw.pack(fill='both', expand=True, padx=10, pady=5)
+
+tree_raw.tag_configure('good', foreground=COLORS['success'])
+tree_raw.tag_configure('medium', foreground=COLORS['warning'])
+tree_raw.tag_configure('bad', foreground=COLORS['danger'])
+
+def on_raw_double_click(event):
+    """Открыть заказ в CRM при двойном клике"""
+    selected = tree_raw.selection()
+    if selected:
+        order_id = tree_raw.item(selected[0])['values'][0]
+        open_order_in_crm(order_id)
+
+tree_raw.bind('<Double-1>', on_raw_double_click)
+
+scrollbar_raw = ttk.Scrollbar(frame_raw, orient='vertical', command=tree_raw.yview)
+tree_raw.configure(yscrollcommand=scrollbar_raw.set)
 
 # === FOOTER ===
 footer = tk.Frame(root, bg='#eceff1')

@@ -9,8 +9,8 @@ ML-модуль для анализа и предсказания времени
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass
+from typing import Dict, List, Tuple, Optional, Any
+from dataclasses import dataclass, field
 from enum import Enum
 
 # ML библиотеки
@@ -61,6 +61,7 @@ class ScheduleRecommendation:
     reason: str                    # Причина рекомендации
     trend_detected: str            # Обнаруженный тренд
     effective_from: str            # Рекомендуемая дата начала применения
+    example_orders: List[Dict] = field(default_factory=list)  # Примеры заказов
 
 
 class DeliveryMLPredictor:
@@ -362,6 +363,52 @@ class DeliveryMLPredictor:
             shift_minutes=shift_minutes
         )
     
+    def get_example_orders(self, df: pd.DataFrame, supplier: str, warehouse: str,
+                           weekday: int, hour: int, limit: int = 5) -> List[Dict]:
+        """
+        Получение примеров заказов для обоснования рекомендации.
+        
+        Returns:
+            Список словарей с данными заказов
+        """
+        mask = (
+            (df['Поставщик'] == supplier) &
+            (df['Склад'] == warehouse)
+        )
+        
+        if 'day_of_week' in df.columns:
+            mask &= (df['day_of_week'] == weekday)
+        if 'hour' in df.columns:
+            mask &= (df['hour'] == hour)
+        
+        subset = df[mask].copy()
+        
+        if subset.empty:
+            return []
+        
+        # Берем последние заказы
+        subset = subset.sort_values('Время заказа позиции', ascending=False).head(limit)
+        
+        examples = []
+        for _, row in subset.iterrows():
+            dev = row.get('Разница во времени привоза (мин.)', 0)
+            examples.append({
+                'order_id': row.get('№ заказа', ''),
+                'order_date': row['Время заказа позиции'].strftime('%d.%m.%Y') if pd.notna(row['Время заказа позиции']) else '',
+                'order_time': row['Время заказа позиции'].strftime('%H:%M') if pd.notna(row['Время заказа позиции']) else '',
+                'plan_time': row['Рассчетное время привоза'].strftime('%H:%M') if pd.notna(row.get('Рассчетное время привоза')) else '',
+                'fact_time': row['Время поступления на склад'].strftime('%H:%M') if pd.notna(row.get('Время поступления на склад')) else '',
+                'deviation': int(dev) if pd.notna(dev) else 0
+            })
+        
+        return examples
+    
+    def remove_outliers(self, df: pd.DataFrame, column: str, n_std: float = 3.0) -> pd.DataFrame:
+        """Удаление выбросов по правилу n стандартных отклонений"""
+        mean = df[column].mean()
+        std = df[column].std()
+        return df[(df[column] >= mean - n_std * std) & (df[column] <= mean + n_std * std)]
+    
     def generate_recommendations(self, df: pd.DataFrame, 
                                  min_samples: int = 5,
                                  min_shift: int = 15) -> List[ScheduleRecommendation]:
@@ -380,28 +427,33 @@ class DeliveryMLPredictor:
             return []
         
         # Подготовка данных
-        df = self.prepare_features(df)
-        df = self.add_rolling_features(df, ['Поставщик', 'Склад', 'day_of_week', 'hour'])
+        df_prep = self.prepare_features(df.copy())
+        df_prep = self.add_rolling_features(df_prep, ['Поставщик', 'Склад', 'day_of_week', 'hour'])
         
         recommendations = []
         
         # Удаляем строки с NaN в ключевых полях
-        df = df.dropna(subset=['Разница во времени привоза (мин.)', 'Поставщик', 'Склад'])
+        df_prep = df_prep.dropna(subset=['Разница во времени привоза (мин.)', 'Поставщик', 'Склад'])
         
         # Группируем по поставщик-склад-день-час
-        grouped = df.groupby(['Поставщик', 'Склад', 'day_of_week', 'hour'])
+        grouped = df_prep.groupby(['Поставщик', 'Склад', 'day_of_week', 'hour'])
         
         for (supplier, warehouse, weekday, hour), group in grouped:
             if len(group) < min_samples:
                 continue
             
+            # Удаляем выбросы для более точного анализа
+            group_clean = self.remove_outliers(group, 'Разница во времени привоза (мин.)', n_std=2.5)
+            if len(group_clean) < min_samples:
+                group_clean = group  # Если после удаления выбросов мало данных, используем все
+            
             # Анализируем последние 2 недели vs предыдущие
-            group = group.sort_values('Время заказа позиции')
+            group_clean = group_clean.sort_values('Время заказа позиции')
             
             # Разделяем на периоды
-            cutoff_date = group['Время заказа позиции'].max() - timedelta(days=14)
-            recent = group[group['Время заказа позиции'] >= cutoff_date]
-            older = group[group['Время заказа позиции'] < cutoff_date]
+            cutoff_date = group_clean['Время заказа позиции'].max() - timedelta(days=14)
+            recent = group_clean[group_clean['Время заказа позиции'] >= cutoff_date]
+            older = group_clean[group_clean['Время заказа позиции'] < cutoff_date]
             
             if len(recent) < 3 or len(older) < 3:
                 continue
@@ -417,15 +469,17 @@ class DeliveryMLPredictor:
                 continue
             
             # Определяем тренд
-            trend, slope = self.detect_trend(df, supplier, warehouse, weekday, hour)
+            trend, slope = self.detect_trend(df_prep, supplier, warehouse, weekday, hour)
             
-            # Рассчитываем уверенность
+            # Улучшенный расчет уверенности
             std = recent['Разница во времени привоза (мин.)'].std()
-            confidence = max(0.5, min(0.95, 1 - std / 60))
+            count_factor = min(1.0, len(recent) / 20)  # Больше данных = выше уверенность
+            std_factor = max(0, min(1, 1 - std / 60))
+            confidence = 0.5 + 0.25 * count_factor + 0.25 * std_factor
+            confidence = round(min(0.95, confidence), 2)
             
             # Формируем рекомендацию
             weekday_name = self.DAYS_RU[weekday]
-            current_expected = f"{12 + int(recent_median // 60):02d}:{int(abs(recent_median) % 60):02d}"
             
             # Рекомендуемое время
             shift_minutes = int(round(recent_median))
@@ -433,6 +487,9 @@ class DeliveryMLPredictor:
             if abs(recent_median) > 30:
                 # Значительное отклонение - рекомендуем изменить
                 reason = self._generate_reason(trend, shift_minutes, weekday_name, hour)
+                
+                # Получаем примеры заказов
+                examples = self.get_example_orders(df_prep, supplier, warehouse, weekday, hour, limit=5)
                 
                 rec = ScheduleRecommendation(
                     supplier=supplier,
@@ -443,10 +500,11 @@ class DeliveryMLPredictor:
                     current_expected_time=f"План + {int(older_median)} мин",
                     recommended_time=f"План + {shift_minutes} мин",
                     shift_minutes=shift_minutes,
-                    confidence=round(confidence, 2),
+                    confidence=confidence,
                     reason=reason,
                     trend_detected=trend.value,
-                    effective_from=(datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')
+                    effective_from=(datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y'),
+                    example_orders=examples
                 )
                 recommendations.append(rec)
         
