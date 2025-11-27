@@ -762,7 +762,7 @@ def create_supplier_charts(parent, df, supplier):
     
     # График 2: Box plot по дням недели
     df['dow_num'] = df['День_недели'].map({day: i for i, day in enumerate(DAYS_RU)})
-    weekday_data = [df[df['dow_num'] == i]['Разница во времени привоза (мін.)'].dropna().values 
+    weekday_data = [df[df['dow_num'] == i]['Разница во времени привоза (мин.)'].dropna().values 
                    for i in range(7)]
     
     bp = ax2.boxplot(weekday_data, labels=DAYS_SHORT, patch_artist=True,
@@ -778,7 +778,7 @@ def create_supplier_charts(parent, df, supplier):
     
     # График 3: Тепловая карта день-час
     df['hour'] = df['Время заказа позиции'].dt.hour
-    heatmap_data = df.groupby(['dow_num', 'hour'])['Разница во времени привоза (мін.)'].median().unstack(fill_value=0)
+    heatmap_data = df.groupby(['dow_num', 'hour'])['Разница во времени привоза (мин.)'].median().unstack(fill_value=0)
     
     if not heatmap_data.empty:
         im = ax3.imshow(heatmap_data.values, cmap='RdYlGn_r', aspect='auto', vmin=-90, vmax=90)
@@ -792,7 +792,7 @@ def create_supplier_charts(parent, df, supplier):
         fig.colorbar(im, ax=ax3, label='Откл. (мин)', shrink=0.8)
     
     # График 4: Медиана по часам с доверительным интервалом
-    hour_stats = df.groupby('hour')['Разница во времени привоза (мін.)'].agg(['median', 'std', 'count'])
+    hour_stats = df.groupby('hour')['Разница во времени привоза (мин.)'].agg(['median', 'std', 'count'])
     hour_stats = hour_stats[hour_stats['count'] >= 3]
     
     if not hour_stats.empty:
@@ -815,7 +815,7 @@ def create_supplier_charts(parent, df, supplier):
     
     # График 5: Динамика с трендом
     df['Дата'] = df['Время заказа позиции'].dt.date
-    daily_stats = df.groupby('Дата')['Разница во времени привоза (мін.)'].agg(['median', 'count'])
+    daily_stats = df.groupby('Дата')['Разница во времени привоза (мин.)'].agg(['median', 'count'])
     daily_stats = daily_stats[daily_stats['count'] >= 2]
     
     if len(daily_stats) > 0:
