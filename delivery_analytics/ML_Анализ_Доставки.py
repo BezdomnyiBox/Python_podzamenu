@@ -480,6 +480,120 @@ def on_rec_double_click(event):
             return
 
 
+def show_orders_for_day(supplier, warehouse, day, parent_df):
+    """Показать все заказы за конкретный день недели"""
+    day_data = parent_df[parent_df['День_недели'] == day].copy()
+    
+    if day_data.empty:
+        messagebox.showinfo("ℹ️ Информация", f"Нет заказов в {day}")
+        return
+    
+    win = tk.Toplevel()
+    win.title(f"📋 Заказы: {supplier} — {warehouse} ({day})")
+    win.geometry("1300x600")
+    win.configure(bg=COLORS['bg'])
+    
+    # Заголовок
+    header = tk.Frame(win, bg=COLORS['info'])
+    header.pack(fill='x')
+    tk.Label(header, text=f"📋 {day} | {supplier}", font=("Segoe UI", 14, "bold"),
+            bg=COLORS['info'], fg='white').pack(pady=10)
+    tk.Label(header, text=f"Всего заказов: {len(day_data)}", font=("Segoe UI", 10),
+            bg=COLORS['info'], fg='white').pack(pady=(0, 10))
+    
+    # Таблица
+    cols = ('№ заказа', 'Дата заказа', 'Час', 'План привоза', 'Факт привоза', 'Откл. (мин)')
+    tree = SortableTreeview(win, columns=cols, show='headings', height=20)
+    tree.column('№ заказа', width=100)
+    tree.column('Дата заказа', width=150)
+    tree.column('Час', width=80)
+    tree.column('План привоза', width=180)
+    tree.column('Факт привоза', width=180)
+    tree.column('Откл. (мин)', width=100)
+    tree.pack(fill='both', expand=True, padx=10, pady=10)
+    
+    for _, row in day_data.iterrows():
+        dev = row['Разница во времени привоза (мин.)']
+        tags = ()
+        if pd.notna(dev):
+            if abs(dev) <= 30:
+                tags = ('good',)
+            elif abs(dev) <= 60:
+                tags = ('medium',)
+            else:
+                tags = ('bad',)
+        
+        tree.insert('', 'end', values=(
+            row['№ заказа'],
+            row['Время заказа позиции'].strftime('%d.%m.%Y') if pd.notna(row['Время заказа позиции']) else '',
+            row['Время заказа позиции'].strftime('%H:%M') if pd.notna(row['Время заказа позиции']) else '',
+            row['Рассчетное время привоза'].strftime('%d.%m.%Y %H:%M') if pd.notna(row['Рассчетное время привоза']) else '',
+            row['Время поступления на склад'].strftime('%d.%m.%Y %H:%M') if pd.notna(row['Время поступления на склад']) else '',
+            f"{dev:+.0f}" if pd.notna(dev) else ''
+        ), tags=tags)
+    
+    tree.tag_configure('good', foreground=COLORS['success'])
+    tree.tag_configure('medium', foreground=COLORS['warning'])
+    tree.tag_configure('bad', foreground=COLORS['danger'])
+
+
+def show_orders_for_hour(supplier, warehouse, hour, parent_df):
+    """Показать все заказы за конкретный час"""
+    hour_data = parent_df[parent_df['Время заказа позиции'].dt.hour == hour].copy()
+    
+    if hour_data.empty:
+        messagebox.showinfo("ℹ️ Информация", f"Нет заказов в {hour}:00")
+        return
+    
+    win = tk.Toplevel()
+    win.title(f"📋 Заказы: {supplier} — {warehouse} ({hour:02d}:00)")
+    win.geometry("1300x600")
+    win.configure(bg=COLORS['bg'])
+    
+    # Заголовок
+    header = tk.Frame(win, bg=COLORS['warning'])
+    header.pack(fill='x')
+    tk.Label(header, text=f"⏰ Час: {hour:02d}:00 | {supplier}", font=("Segoe UI", 14, "bold"),
+            bg=COLORS['warning'], fg='white').pack(pady=10)
+    tk.Label(header, text=f"Всего заказов: {len(hour_data)}", font=("Segoe UI", 10),
+            bg=COLORS['warning'], fg='white').pack(pady=(0, 10))
+    
+    # Таблица
+    cols = ('№ заказа', 'День', 'Дата заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
+    tree = SortableTreeview(win, columns=cols, show='headings', height=20)
+    tree.column('№ заказа', width=100)
+    tree.column('День', width=80)
+    tree.column('Дата заказа', width=150)
+    tree.column('План привоза', width=180)
+    tree.column('Факт привоза', width=180)
+    tree.column('Откл. (мин)', width=100)
+    tree.pack(fill='both', expand=True, padx=10, pady=10)
+    
+    for _, row in hour_data.iterrows():
+        dev = row['Разница во времени привоза (мин.)']
+        tags = ()
+        if pd.notna(dev):
+            if abs(dev) <= 30:
+                tags = ('good',)
+            elif abs(dev) <= 60:
+                tags = ('medium',)
+            else:
+                tags = ('bad',)
+        
+        tree.insert('', 'end', values=(
+            row['№ заказа'],
+            row['День_недели'][:2] if row['День_недели'] else '',
+            row['Время заказа позиции'].strftime('%d.%m.%Y %H:%M') if pd.notna(row['Время заказа позиции']) else '',
+            row['Рассчетное время привоза'].strftime('%d.%m.%Y %H:%M') if pd.notna(row['Рассчетное время привоза']) else '',
+            row['Время поступления на склад'].strftime('%d.%m.%Y %H:%M') if pd.notna(row['Время поступления на склад']) else '',
+            f"{dev:+.0f}" if pd.notna(dev) else ''
+        ), tags=tags)
+    
+    tree.tag_configure('good', foreground=COLORS['success'])
+    tree.tag_configure('medium', foreground=COLORS['warning'])
+    tree.tag_configure('bad', foreground=COLORS['danger'])
+
+
 def show_supplier_details(supplier, warehouse):
     """Окно с детальным анализом поставщика"""
     if df_current is None:
@@ -578,104 +692,194 @@ def show_supplier_details(supplier, warehouse):
             f"{median_dev:+.1f}", f"{on_time:.1f}%"
         ))
     
-    # === Вкладка 4: Заказы ===
-    frame_orders = ttk.Frame(notebook)
-    notebook.add(frame_orders, text="📋 Заказы")
+    # Обработчики двойного клика для раскрывающихся списков
+    def on_weekday_double_click(event):
+        selected = tree_wd.selection()
+        if not selected:
+            return
+        day = tree_wd.item(selected[0])['values'][0]
+        show_orders_for_day(supplier, warehouse, day, subset)
     
-    cols_ord = ('№ заказа', 'День', 'Время заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
-    tree_ord = SortableTreeview(frame_orders, columns=cols_ord, show='headings', height=20)
-    for col in cols_ord:
-        tree_ord.column(col, width=130)
-    tree_ord.pack(fill='both', expand=True, padx=10, pady=10)
+    def on_hour_double_click(event):
+        selected = tree_hr.selection()
+        if not selected:
+            return
+        hour_str = tree_hr.item(selected[0])['values'][0]
+        hour = int(hour_str.split(':')[0])
+        show_orders_for_hour(supplier, warehouse, hour, subset)
     
-    for _, row in subset.head(500).iterrows():
-        dev = row['Разница во времени привоза (мин.)']
-        tags = ()
-        if pd.notna(dev):
-            if abs(dev) <= 30:
-                tags = ('good',)
-            elif abs(dev) <= 60:
-                tags = ('medium',)
-            else:
-                tags = ('bad',)
-        
-        tree_ord.insert('', 'end', values=(
-            row['№ заказа'],
-            row['День_недели'][:2] if row['День_недели'] else '',
-            row['Время заказа позиции'].strftime('%d.%m %H:%M') if pd.notna(row['Время заказа позиции']) else '',
-            row['Рассчетное время привоза'].strftime('%H:%M') if pd.notna(row['Рассчетное время привоза']) else '',
-            row['Время поступления на склад'].strftime('%H:%M') if pd.notna(row['Время поступления на склад']) else '',
-            f"{dev:+.0f}" if pd.notna(dev) else ''
-        ), tags=tags)
+    tree_wd.bind('<Double-1>', on_weekday_double_click)
+    tree_hr.bind('<Double-1>', on_hour_double_click)
     
-    tree_ord.tag_configure('good', foreground=COLORS['success'])
-    tree_ord.tag_configure('medium', foreground=COLORS['warning'])
-    tree_ord.tag_configure('bad', foreground=COLORS['danger'])
+    # Подсказки
+    tk.Label(frame_weekday, text="💡 Двойной клик — просмотр заказов за этот день", 
+            font=("Segoe UI", 9), fg=COLORS['text_light']).pack(pady=5)
+    tk.Label(frame_hour, text="💡 Двойной клик — просмотр заказов в этот час", 
+            font=("Segoe UI", 9), fg=COLORS['text_light']).pack(pady=5)
 
 
 def create_supplier_charts(parent, df, supplier):
-    """Создание графиков для поставщика"""
-    fig = Figure(figsize=(12, 8), dpi=100, facecolor=COLORS['bg'])
+    """Создание улучшенных графиков для поставщика"""
+    fig = Figure(figsize=(14, 10), dpi=100, facecolor=COLORS['bg'])
     
-    # 2x2 сетка графиков
-    ax1 = fig.add_subplot(221)
-    ax2 = fig.add_subplot(222)
-    ax3 = fig.add_subplot(223)
-    ax4 = fig.add_subplot(224)
+    # 2x3 сетка для 6 графиков
+    ax1 = fig.add_subplot(231)
+    ax2 = fig.add_subplot(232)
+    ax3 = fig.add_subplot(233)
+    ax4 = fig.add_subplot(234)
+    ax5 = fig.add_subplot(235)
+    ax6 = fig.add_subplot(236)
     
-    # График 1: Распределение отклонений
+    # График 1: Распределение с градиентом
     deviations = df['Разница во времени привоза (мин.)'].dropna()
-    ax1.hist(deviations, bins=30, color=COLORS['primary'], alpha=0.7, edgecolor='white')
-    ax1.axvline(x=0, color=COLORS['success'], linestyle='--', linewidth=2, label='План')
-    ax1.axvline(x=deviations.median(), color=COLORS['danger'], linestyle='-', linewidth=2, label=f'Медиана: {deviations.median():.0f}')
-    ax1.set_title('Распределение отклонений', fontsize=11, fontweight='bold')
-    ax1.set_xlabel('Отклонение (мин)')
-    ax1.set_ylabel('Количество')
-    ax1.legend(fontsize=8)
-    ax1.grid(True, alpha=0.3)
+    counts, bins, patches = ax1.hist(deviations, bins=40, edgecolor='white', linewidth=0.5)
     
-    # График 2: По дням недели
-    weekday_stats = df.groupby('День_недели')['Разница во времени привоза (мин.)'].agg(['mean', 'median']).reindex(DAYS_RU)
-    x_pos = range(len(DAYS_SHORT))
-    ax2.bar(x_pos, weekday_stats['median'].fillna(0), color=COLORS['info'], alpha=0.7, label='Медиана')
-    ax2.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=1)
-    ax2.set_xticks(x_pos)
-    ax2.set_xticklabels(DAYS_SHORT)
-    ax2.set_title('Отклонение по дням недели', fontsize=11, fontweight='bold')
-    ax2.set_ylabel('Медиана откл. (мин)')
-    ax2.grid(True, alpha=0.3, axis='y')
+    # Градиентная заливка
+    for i, patch in enumerate(patches):
+        bin_center = (bins[i] + bins[i+1]) / 2
+        if bin_center < -60:
+            color = '#4caf50'  # Зелёный (ранние)
+        elif bin_center < -30:
+            color = '#8bc34a'
+        elif bin_center < 30:
+            color = '#2196f3'  # Синий (вовремя)
+        elif bin_center < 60:
+            color = '#ff9800'  # Оранжевый
+        else:
+            color = '#f44336'  # Красный (опоздания)
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
     
-    # График 3: По часам
-    df['Час'] = df['Время заказа позиции'].dt.hour
-    hour_stats = df.groupby('Час')['Разница во времени привоза (мин.)'].median()
-    ax3.plot(hour_stats.index, hour_stats.values, marker='o', color=COLORS['primary'], linewidth=2, markersize=6)
-    ax3.fill_between(hour_stats.index, hour_stats.values, alpha=0.3, color=COLORS['primary'])
-    ax3.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=1)
-    ax3.set_title('Отклонение по часам заказа', fontsize=11, fontweight='bold')
-    ax3.set_xlabel('Час')
-    ax3.set_ylabel('Медиана откл. (мин)')
-    ax3.grid(True, alpha=0.3)
-    ax3.set_xticks(range(6, 22, 2))
+    ax1.axvline(x=0, color='#1565c0', linestyle='--', linewidth=2.5, label='График (0)')
+    ax1.axvline(x=deviations.median(), color='#d32f2f', linestyle='-', linewidth=2.5, 
+               label=f'Медиана: {deviations.median():.0f} мин')
+    ax1.set_title('📊 Распределение отклонений', fontsize=12, fontweight='bold', pad=10)
+    ax1.set_xlabel('Отклонение (мин)', fontsize=10)
+    ax1.set_ylabel('Количество заказов', fontsize=10)
+    ax1.legend(fontsize=9, loc='upper right')
+    ax1.grid(True, alpha=0.2, linestyle='--')
+    ax1.set_facecolor('#fafafa')
     
-    # График 4: Тренд по времени
+    # График 2: Box plot по дням недели
+    df['dow_num'] = df['День_недели'].map({day: i for i, day in enumerate(DAYS_RU)})
+    weekday_data = [df[df['dow_num'] == i]['Разница во времени привоза (мін.)'].dropna().values 
+                   for i in range(7)]
+    
+    bp = ax2.boxplot(weekday_data, labels=DAYS_SHORT, patch_artist=True,
+                    boxprops=dict(facecolor='#64b5f6', alpha=0.7),
+                    medianprops=dict(color='#d32f2f', linewidth=2),
+                    whiskerprops=dict(color='#1976d2'),
+                    capprops=dict(color='#1976d2'))
+    ax2.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=1.5, alpha=0.8)
+    ax2.set_title('📅 Распределение по дням недели', fontsize=12, fontweight='bold', pad=10)
+    ax2.set_ylabel('Отклонение (мин)', fontsize=10)
+    ax2.grid(True, alpha=0.2, axis='y', linestyle='--')
+    ax2.set_facecolor('#fafafa')
+    
+    # График 3: Тепловая карта день-час
+    df['hour'] = df['Время заказа позиции'].dt.hour
+    heatmap_data = df.groupby(['dow_num', 'hour'])['Разница во времени привоза (мін.)'].median().unstack(fill_value=0)
+    
+    if not heatmap_data.empty:
+        im = ax3.imshow(heatmap_data.values, cmap='RdYlGn_r', aspect='auto', vmin=-90, vmax=90)
+        ax3.set_yticks(range(len(DAYS_SHORT)))
+        ax3.set_yticklabels(DAYS_SHORT)
+        ax3.set_xticks(range(len(heatmap_data.columns)))
+        ax3.set_xticklabels([f"{h:02d}" for h in heatmap_data.columns], fontsize=8)
+        ax3.set_title('🔥 Тепловая карта: День × Час', fontsize=12, fontweight='bold', pad=10)
+        ax3.set_xlabel('Час заказа', fontsize=10)
+        ax3.set_ylabel('День недели', fontsize=10)
+        fig.colorbar(im, ax=ax3, label='Откл. (мин)', shrink=0.8)
+    
+    # График 4: Медиана по часам с доверительным интервалом
+    hour_stats = df.groupby('hour')['Разница во времени привоза (мін.)'].agg(['median', 'std', 'count'])
+    hour_stats = hour_stats[hour_stats['count'] >= 3]
+    
+    if not hour_stats.empty:
+        hours = hour_stats.index
+        medians = hour_stats['median']
+        stds = hour_stats['std'].fillna(0)
+        
+        ax4.plot(hours, medians, marker='o', color='#1976d2', linewidth=3, markersize=8, 
+                label='Медиана', markeredgecolor='white', markeredgewidth=2)
+        ax4.fill_between(hours, medians - stds, medians + stds, alpha=0.2, color='#2196f3', 
+                        label='±1 ст. откл.')
+        ax4.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=2, alpha=0.8, label='График')
+        ax4.set_title('⏰ Отклонение по часам', fontsize=12, fontweight='bold', pad=10)
+        ax4.set_xlabel('Час заказа', fontsize=10)
+        ax4.set_ylabel('Медиана откл. (мин)', fontsize=10)
+        ax4.legend(fontsize=9)
+        ax4.grid(True, alpha=0.2, linestyle='--')
+        ax4.set_facecolor('#fafafa')
+        ax4.set_xticks(range(6, 22, 2))
+    
+    # График 5: Динамика с трендом
     df['Дата'] = df['Время заказа позиции'].dt.date
-    daily_median = df.groupby('Дата')['Разница во времени привоза (мин.)'].median()
-    if len(daily_median) > 0:
-        dates = pd.to_datetime(daily_median.index)
-        ax4.plot(dates, daily_median.values, color=COLORS['primary'], alpha=0.5, linewidth=1)
-        # Скользящее среднее
-        if len(daily_median) > 7:
-            rolling = daily_median.rolling(window=7).mean()
-            ax4.plot(dates, rolling.values, color=COLORS['danger'], linewidth=2, label='7-дн. среднее')
-        ax4.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=1)
-        ax4.set_title('Тренд отклонений', fontsize=11, fontweight='bold')
-        ax4.set_xlabel('Дата')
-        ax4.set_ylabel('Медиана откл. (мин)')
-        ax4.legend(fontsize=8)
-        ax4.grid(True, alpha=0.3)
-        ax4.tick_params(axis='x', rotation=45)
+    daily_stats = df.groupby('Дата')['Разница во времени привоза (мін.)'].agg(['median', 'count'])
+    daily_stats = daily_stats[daily_stats['count'] >= 2]
     
-    fig.tight_layout(pad=2)
+    if len(daily_stats) > 0:
+        dates = pd.to_datetime(daily_stats.index)
+        
+        # Точки с размером по количеству
+        sizes = (daily_stats['count'] / daily_stats['count'].max() * 100) + 20
+        scatter = ax5.scatter(dates, daily_stats['median'], s=sizes, alpha=0.4, 
+                            c=daily_stats['median'], cmap='RdYlGn_r', vmin=-60, vmax=60,
+                            edgecolors='#1976d2', linewidth=1)
+        
+        # Скользящее среднее
+        if len(daily_stats) > 7:
+            rolling = daily_stats['median'].rolling(window=7, center=True).mean()
+            ax5.plot(dates, rolling.values, color='#d32f2f', linewidth=3, 
+                    label='7-дневное среднее', alpha=0.9)
+        
+        # Линия тренда
+        if len(daily_stats) > 14:
+            z = np.polyfit(range(len(daily_stats)), daily_stats['median'].values, 1)
+            p = np.poly1d(z)
+            ax5.plot(dates, p(range(len(daily_stats))), "--", color='#7b1fa2', 
+                    linewidth=2, label=f'Тренд: {z[0]:.2f} мин/день', alpha=0.7)
+        
+        ax5.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=2, alpha=0.8)
+        ax5.set_title('📈 Динамика отклонений', fontsize=12, fontweight='bold', pad=10)
+        ax5.set_xlabel('Дата', fontsize=10)
+        ax5.set_ylabel('Медиана откл. (мин)', fontsize=10)
+        ax5.legend(fontsize=9)
+        ax5.grid(True, alpha=0.2, linestyle='--')
+        ax5.set_facecolor('#fafafa')
+        ax5.tick_params(axis='x', rotation=45)
+        fig.colorbar(scatter, ax=ax5, label='Откл. (мин)', shrink=0.8)
+    
+    # График 6: Процент вовремя по дням
+    weekday_ontime = []
+    for day in DAYS_RU:
+        day_data = df[df['День_недели'] == day]
+        if len(day_data) > 0:
+            pct = (day_data['Разница во времени привоза (мин.)'].between(-30, 30).sum() / len(day_data)) * 100
+            weekday_ontime.append(pct)
+        else:
+            weekday_ontime.append(0)
+    
+    colors_bars = ['#4caf50' if p >= 80 else '#ff9800' if p >= 60 else '#f44336' for p in weekday_ontime]
+    bars = ax6.bar(range(7), weekday_ontime, color=colors_bars, alpha=0.8, edgecolor='white', linewidth=1.5)
+    
+    # Добавляем значения на столбцы
+    for i, (bar, value) in enumerate(zip(bars, weekday_ontime)):
+        height = bar.get_height()
+        ax6.text(bar.get_x() + bar.get_width()/2., height + 1,
+                f'{value:.0f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    ax6.axhline(y=80, color=COLORS['success'], linestyle='--', linewidth=1.5, alpha=0.5, label='Цель: 80%')
+    ax6.set_xticks(range(7))
+    ax6.set_xticklabels(DAYS_SHORT)
+    ax6.set_ylim(0, 105)
+    ax6.set_title('✅ % вовремя по дням (±30 мин)', fontsize=12, fontweight='bold', pad=10)
+    ax6.set_ylabel('% вовремя', fontsize=10)
+    ax6.legend(fontsize=9)
+    ax6.grid(True, alpha=0.2, axis='y', linestyle='--')
+    ax6.set_facecolor('#fafafa')
+    
+    fig.tight_layout(pad=1.5)
     
     canvas = FigureCanvasTkAgg(fig, parent)
     canvas.draw()
@@ -845,58 +1049,162 @@ def show_overall_charts():
     
     win = tk.Toplevel(root)
     win.title("📊 Общая аналитика")
-    win.geometry("1300x800")
+    win.geometry("1400x900")
     win.configure(bg=COLORS['bg'])
     
-    fig = Figure(figsize=(14, 9), dpi=100, facecolor=COLORS['bg'])
+    # Заголовок
+    header = tk.Frame(win, bg=COLORS['header'])
+    header.pack(fill='x')
+    tk.Label(header, text="📊 Общая аналитика по всем поставщикам", 
+            font=("Segoe UI", 16, "bold"), bg=COLORS['header'], fg='white').pack(pady=12)
     
-    # 2x2 сетка
-    ax1 = fig.add_subplot(221)
-    ax2 = fig.add_subplot(222)
-    ax3 = fig.add_subplot(223)
-    ax4 = fig.add_subplot(224)
+    fig = Figure(figsize=(15, 10), dpi=100, facecolor=COLORS['bg'])
+    
+    # 2x3 сетка
+    ax1 = fig.add_subplot(231)
+    ax2 = fig.add_subplot(232)
+    ax3 = fig.add_subplot(233)
+    ax4 = fig.add_subplot(234)
+    ax5 = fig.add_subplot(235)
+    ax6 = fig.add_subplot(236)
     
     # 1. Топ-10 поставщиков по количеству опозданий
     late_by_supplier = df_current[df_current['Разница во времени привоза (мин.)'] > 30].groupby('Поставщик').size().nlargest(10)
-    ax1.barh(range(len(late_by_supplier)), late_by_supplier.values, color=COLORS['danger'], alpha=0.7)
+    colors_top = plt.cm.Reds(np.linspace(0.4, 0.8, len(late_by_supplier)))
+    bars1 = ax1.barh(range(len(late_by_supplier)), late_by_supplier.values, color=colors_top, edgecolor='white', linewidth=1)
     ax1.set_yticks(range(len(late_by_supplier)))
-    ax1.set_yticklabels([s[:20] for s in late_by_supplier.index], fontsize=8)
-    ax1.set_title('Топ-10 по опозданиям (>30 мин)', fontsize=11, fontweight='bold')
-    ax1.set_xlabel('Количество опозданий')
+    ax1.set_yticklabels([s[:25] for s in late_by_supplier.index], fontsize=9)
+    ax1.set_title('🔴 Топ-10 по опозданиям (>30 мин)', fontsize=12, fontweight='bold', pad=10)
+    ax1.set_xlabel('Количество опозданий', fontsize=10)
     ax1.invert_yaxis()
+    ax1.grid(True, alpha=0.2, axis='x', linestyle='--')
+    ax1.set_facecolor('#fafafa')
     
-    # 2. Распределение по дням
-    weekday_counts = df_current.groupby('День_недели').size().reindex(DAYS_RU).fillna(0)
-    colors = [COLORS['primary'] if i < 5 else COLORS['warning'] for i in range(7)]
-    ax2.bar(DAYS_SHORT, weekday_counts.values, color=colors, alpha=0.7)
-    ax2.set_title('Заказы по дням недели', fontsize=11, fontweight='bold')
-    ax2.set_ylabel('Количество заказов')
+    for i, bar in enumerate(bars1):
+        width = bar.get_width()
+        ax1.text(width, bar.get_y() + bar.get_height()/2., f' {int(width)}',
+                ha='left', va='center', fontsize=8, fontweight='bold')
     
-    # 3. Распределение отклонений
+    # 2. Топ-10 поставщиков по % вовремя
+    supplier_stats = df_current.groupby('Поставщик').apply(
+        lambda x: (x['Разница во времени привоза (мин.)'].between(-30, 30).sum() / len(x)) * 100
+    ).nlargest(10)
+    
+    colors_best = ['#4caf50' if p >= 90 else '#8bc34a' if p >= 80 else '#fdd835' for p in supplier_stats.values]
+    bars2 = ax2.barh(range(len(supplier_stats)), supplier_stats.values, color=colors_best, 
+                    edgecolor='white', linewidth=1, alpha=0.8)
+    ax2.set_yticks(range(len(supplier_stats)))
+    ax2.set_yticklabels([s[:25] for s in supplier_stats.index], fontsize=9)
+    ax2.set_title('🟢 Топ-10 лучших по % вовремя', fontsize=12, fontweight='bold', pad=10)
+    ax2.set_xlabel('% вовремя', fontsize=10)
+    ax2.axvline(x=80, color='#2e7d32', linestyle='--', linewidth=2, alpha=0.6, label='Цель: 80%')
+    ax2.invert_yaxis()
+    ax2.legend(fontsize=9)
+    ax2.grid(True, alpha=0.2, axis='x', linestyle='--')
+    ax2.set_facecolor('#fafafa')
+    
+    for i, bar in enumerate(bars2):
+        width = bar.get_width()
+        ax2.text(width - 3, bar.get_y() + bar.get_height()/2., f'{width:.1f}%',
+                ha='right', va='center', fontsize=9, fontweight='bold', color='white')
+    
+    # 3. Распределение всех отклонений (улучшенная гистограмма)
     deviations = df_current['Разница во времени привоза (мин.)'].dropna()
-    ax3.hist(deviations, bins=50, color=COLORS['info'], alpha=0.7, edgecolor='white')
-    ax3.axvline(x=0, color=COLORS['success'], linestyle='--', linewidth=2)
-    ax3.axvline(x=deviations.median(), color=COLORS['danger'], linestyle='-', linewidth=2, label=f'Медиана: {deviations.median():.0f}')
-    ax3.set_title('Распределение всех отклонений', fontsize=11, fontweight='bold')
-    ax3.set_xlabel('Отклонение (мин)')
-    ax3.legend()
+    counts, bins, patches = ax3.hist(deviations, bins=60, edgecolor='white', linewidth=0.5)
     
-    # 4. Тренд по месяцам
+    for i, patch in enumerate(patches):
+        bin_center = (bins[i] + bins[i+1]) / 2
+        if -30 <= bin_center <= 30:
+            color = '#4caf50'
+        elif -60 <= bin_center <= 60:
+            color = '#ff9800'
+        else:
+            color = '#f44336'
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    
+    ax3.axvline(x=0, color='#1565c0', linestyle='--', linewidth=2.5, label='График')
+    ax3.axvline(x=deviations.median(), color='#d32f2f', linestyle='-', linewidth=2.5, 
+               label=f'Медиана: {deviations.median():.0f} мин')
+    ax3.axvline(x=-30, color='#7cb342', linestyle=':', linewidth=1.5, alpha=0.6)
+    ax3.axvline(x=30, color='#7cb342', linestyle=':', linewidth=1.5, alpha=0.6, label='±30 мин')
+    ax3.set_title('📊 Распределение отклонений', fontsize=12, fontweight='bold', pad=10)
+    ax3.set_xlabel('Отклонение (мин)', fontsize=10)
+    ax3.set_ylabel('Количество', fontsize=10)
+    ax3.legend(fontsize=9)
+    ax3.grid(True, alpha=0.2, linestyle='--')
+    ax3.set_facecolor('#fafafa')
+    
+    # 4. Заказы по дням недели с медианой
+    weekday_counts = df_current.groupby('День_недели').size().reindex(DAYS_RU).fillna(0)
+    weekday_median = df_current.groupby('День_недели')['Разница во времени привоза (мин.)'].median().reindex(DAYS_RU).fillna(0)
+    
+    colors_wd = ['#2196f3' if i < 5 else '#ff9800' for i in range(7)]
+    bars4 = ax4.bar(range(7), weekday_counts.values, color=colors_wd, alpha=0.7, edgecolor='white', linewidth=1)
+    
+    ax4_twin = ax4.twinx()
+    ax4_twin.plot(range(7), weekday_median.values, color='#d32f2f', marker='D', 
+                 linewidth=3, markersize=8, label='Медиана откл.', markeredgecolor='white', markeredgewidth=2)
+    ax4_twin.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=1.5, alpha=0.6)
+    
+    ax4.set_xticks(range(7))
+    ax4.set_xticklabels(DAYS_SHORT)
+    ax4.set_title('📅 Нагрузка по дням недели', fontsize=12, fontweight='bold', pad=10)
+    ax4.set_ylabel('Количество заказов', color='#2196f3', fontsize=10)
+    ax4_twin.set_ylabel('Медиана откл. (мин)', color='#d32f2f', fontsize=10)
+    ax4_twin.legend(fontsize=9, loc='upper right')
+    ax4.grid(True, alpha=0.2, axis='y', linestyle='--')
+    ax4.set_facecolor('#fafafa')
+    
+    # 5. Динамика по месяцам
     df_current['Месяц'] = df_current['Время заказа позиции'].dt.to_period('M')
-    monthly = df_current.groupby('Месяц')['Разница во времени привоза (мин.)'].agg(['median', 'count'])
+    monthly = df_current.groupby('Месяц')['Разница во времени привоза (мин.)'].agg(['median', 'count', 'std'])
+    
     if len(monthly) > 0:
         x = range(len(monthly))
-        ax4.bar(x, monthly['count'], color=COLORS['info'], alpha=0.3, label='Заказов')
-        ax4_twin = ax4.twinx()
-        ax4_twin.plot(x, monthly['median'], color=COLORS['danger'], marker='o', linewidth=2, label='Медиана откл.')
-        ax4.set_xticks(x[::max(1, len(x)//12)])
-        ax4.set_xticklabels([str(m) for m in monthly.index[::max(1, len(x)//12)]], rotation=45, fontsize=8)
-        ax4.set_title('Динамика по месяцам', fontsize=11, fontweight='bold')
-        ax4.set_ylabel('Количество', color=COLORS['info'])
-        ax4_twin.set_ylabel('Медиана откл. (мин)', color=COLORS['danger'])
-        ax4_twin.axhline(y=0, color=COLORS['success'], linestyle='--', alpha=0.5)
+        
+        ax5.bar(x, monthly['count'], color='#64b5f6', alpha=0.4, label='Количество', edgecolor='white')
+        
+        ax5_twin = ax5.twinx()
+        ax5_twin.plot(x, monthly['median'], color='#d32f2f', marker='o', linewidth=3, 
+                     markersize=7, label='Медиана откл.', markeredgecolor='white', markeredgewidth=2)
+        ax5_twin.fill_between(x, 
+                             monthly['median'] - monthly['std'].fillna(0), 
+                             monthly['median'] + monthly['std'].fillna(0),
+                             alpha=0.2, color='#f44336', label='±1σ')
+        ax5_twin.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=1.5, alpha=0.7)
+        
+        ax5.set_xticks(x[::max(1, len(x)//15)])
+        ax5.set_xticklabels([str(m) for m in monthly.index[::max(1, len(x)//15)]], rotation=45, fontsize=8)
+        ax5.set_title('📆 Динамика по месяцам', fontsize=12, fontweight='bold', pad=10)
+        ax5.set_ylabel('Заказов', color='#1976d2', fontsize=10)
+        ax5_twin.set_ylabel('Откл. (мин)', color='#d32f2f', fontsize=10)
+        ax5.legend(loc='upper left', fontsize=8)
+        ax5_twin.legend(loc='upper right', fontsize=8)
+        ax5.grid(True, alpha=0.2, linestyle='--')
+        ax5.set_facecolor('#fafafa')
     
-    fig.tight_layout(pad=2)
+    # 6. Общая сводка: вовремя/ранние/опоздания
+    total = len(df_current)
+    on_time = len(df_current[df_current['Разница во времени привоза (мин.)'].between(-30, 30)])
+    early = len(df_current[df_current['Разница во времени привоза (мин.)'] < -30])
+    late = len(df_current[df_current['Разница во времени привоза (мин.)'] > 30])
+    
+    sizes = [on_time, early, late]
+    labels = [f'✅ Вовремя\n{on_time:,}\n({on_time/total*100:.1f}%)', 
+             f'⬇ Ранние\n{early:,}\n({early/total*100:.1f}%)',
+             f'⬆ Опоздания\n{late:,}\n({late/total*100:.1f}%)']
+    colors_pie = ['#4caf50', '#2196f3', '#f44336']
+    explode = (0.05, 0, 0.08)
+    
+    wedges, texts, autotexts = ax6.pie(sizes, labels=labels, colors=colors_pie, autopct='',
+                                       startangle=90, explode=explode,
+                                       textprops={'fontsize': 11, 'fontweight': 'bold'},
+                                       wedgeprops={'edgecolor': 'white', 'linewidth': 3})
+    
+    ax6.set_title('⚖️ Общая сводка', fontsize=12, fontweight='bold', pad=10)
+    
+    fig.tight_layout(pad=1.5)
     
     canvas = FigureCanvasTkAgg(fig, win)
     canvas.draw()
