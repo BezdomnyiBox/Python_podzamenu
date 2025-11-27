@@ -723,6 +723,20 @@ def show_supplier_details(supplier, warehouse):
     frame_charts = ttk.Frame(notebook)
     notebook.add(frame_charts, text="📈 Графики")
     
+    # Кнопка помощи
+    help_frame = tk.Frame(frame_charts, bg=COLORS['bg'])
+    help_frame.pack(fill='x', padx=10, pady=5)
+    
+    tk.Button(
+        help_frame,
+        text="❓ Как читать графики?",
+        command=lambda: show_charts_guide(),
+        font=("Segoe UI", 10),
+        bg=COLORS['info'],
+        fg='white',
+        cursor='hand2'
+    ).pack(side='right', padx=5)
+    
     create_supplier_charts(frame_charts, subset, supplier)
     
     # === Вкладка 2: По дням недели ===
@@ -801,8 +815,100 @@ def show_supplier_details(supplier, warehouse):
             font=("Segoe UI", 9), fg=COLORS['text_light']).pack(pady=5)
 
 
+def show_charts_guide():
+    """Окно с гайдом по чтению графиков"""
+    win = tk.Toplevel(root)
+    win.title("❓ Как читать графики")
+    win.geometry("900x700")
+    win.configure(bg=COLORS['bg'])
+    
+    # Заголовок
+    header = tk.Frame(win, bg=COLORS['info'])
+    header.pack(fill='x')
+    tk.Label(header, text="❓ Гайд по чтению графиков", 
+            font=("Segoe UI", 16, "bold"), bg=COLORS['info'], fg='white').pack(pady=15)
+    
+    # Контент с прокруткой
+    canvas = tk.Canvas(win, bg=COLORS['bg'])
+    scrollbar = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+    scrollable_frame = tk.Frame(canvas, bg=COLORS['bg'])
+    
+    scrollable_frame.bind(
+        "<Configure>",
+        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+    )
+    
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    
+    content = scrollable_frame
+    
+    guides = [
+        ("📊 Распределение отклонений", 
+         "Показывает, как часто поставщик привозит вовремя, рано или поздно.\n\n"
+         "• 🟢 Зелёный — привоз раньше графика (хорошо)\n"
+         "• 🔵 Синий — привоз вовремя (±30 мин от графика)\n"
+         "• 🟠 Оранжевый — небольшое опоздание (30-60 мин)\n"
+         "• 🔴 Красный — сильное опоздание (>60 мин)\n\n"
+         "Синяя пунктирная линия — график (0 минут отклонения)\n"
+         "Красная линия — медиана (среднее значение отклонений)"),
+        
+        ("📅 Распределение по дням недели",
+         "Показывает разброс отклонений по каждому дню недели.\n\n"
+         "• Коробка — 50% всех заказов (между 25% и 75%)\n"
+         "• Красная линия — медиана (середина)\n"
+         "• Усы — минимальные и максимальные значения\n"
+         "• Точки — редкие случаи (выбросы)\n\n"
+         "Чем выше коробка, тем больше опозданий в этот день."),
+        
+        ("🔥 Тепловая карта: День × Час",
+         "Цветовая карта показывает, в какие дни и часы поставщик опаздывает.\n\n"
+         "• 🟢 Зелёный — привоз вовремя или раньше\n"
+         "• 🟡 Жёлтый — небольшое опоздание\n"
+         "• 🔴 Красный — сильное опоздание\n\n"
+         "Используйте для поиска проблемных периодов."),
+        
+        ("⏰ Отклонение по часам",
+         "Показывает среднее отклонение для каждого часа заказа.\n\n"
+         "• Синяя линия — медианное отклонение\n"
+         "• Серая зона — диапазон отклонений (±1 стандартное отклонение)\n"
+         "• Зелёная пунктирная — график (0 минут)\n\n"
+         "Если линия выше 0 — поставщик опаздывает в этот час."),
+        
+        ("📈 Динамика отклонений",
+         "Показывает, как меняется точность поставок со временем.\n\n"
+         "• Размер точки — количество заказов в этот день\n"
+         "• Цвет точки — величина отклонения (зелёный=хорошо, красный=плохо)\n"
+         "• Красная линия — 7-дневное среднее (сглаженный тренд)\n"
+         "• Фиолетовая пунктирная — общий тренд (улучшение/ухудшение)\n\n"
+         "Если фиолетовая линия идёт вверх — ситуация ухудшается."),
+        
+        ("✅ % вовремя по дням",
+         "Процент заказов, привезённых вовремя (±30 минут от графика).\n\n"
+         "• 🟢 Зелёный — ≥80% (отлично)\n"
+         "• 🟠 Оранжевый — 60-80% (приемлемо)\n"
+         "• 🔴 Красный — <60% (плохо)\n\n"
+         "Цель — 80% и выше (зелёная пунктирная линия).")
+    ]
+    
+    for i, (title, text) in enumerate(guides):
+        frame = tk.LabelFrame(content, text=title, font=("Segoe UI", 12, "bold"),
+                             bg=COLORS['bg'], fg=COLORS['primary'], padx=15, pady=10)
+        frame.pack(fill='x', padx=20, pady=10)
+        
+        tk.Label(frame, text=text, font=("Segoe UI", 10), bg=COLORS['bg'],
+                justify='left', wraplength=800).pack(anchor='w', padx=10, pady=5)
+    
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    
+    # Подсказка
+    tk.Label(win, text="💡 Используйте колесо мыши для прокрутки", 
+            font=("Segoe UI", 9), fg=COLORS['text_light'], bg=COLORS['bg']).pack(pady=5)
+
+
 def create_supplier_charts(parent, df, supplier):
-    """Создание улучшенных графиков для поставщика"""
+    """Создание улучшенных графиков для поставщика с пояснениями"""
     fig = Figure(figsize=(14, 10), dpi=100, facecolor=COLORS['bg'])
     
     # 2x3 сетка для 6 графиков
@@ -833,13 +939,15 @@ def create_supplier_charts(parent, df, supplier):
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
     
-    ax1.axvline(x=0, color='#1565c0', linestyle='--', linewidth=2.5, label='График (0)')
+    ax1.axvline(x=0, color='#1565c0', linestyle='--', linewidth=2.5, label='График (0 мин)')
     ax1.axvline(x=deviations.median(), color='#d32f2f', linestyle='-', linewidth=2.5, 
-               label=f'Медиана: {deviations.median():.0f} мин')
-    ax1.set_title('📊 Распределение отклонений', fontsize=12, fontweight='bold', pad=10)
-    ax1.set_xlabel('Отклонение (мин)', fontsize=10)
+               label=f'Среднее: {deviations.median():.0f} мин')
+    ax1.set_title('📊 Распределение отклонений\n(🟢 раньше | 🔵 вовремя | 🔴 позже)', 
+                 fontsize=11, fontweight='bold', pad=10)
+    ax1.set_xlabel('Отклонение от графика (минуты)\nОтрицательные = раньше, Положительные = позже', 
+                   fontsize=9)
     ax1.set_ylabel('Количество заказов', fontsize=10)
-    ax1.legend(fontsize=9, loc='upper right')
+    ax1.legend(fontsize=8, loc='upper right', framealpha=0.9)
     ax1.grid(True, alpha=0.2, linestyle='--')
     ax1.set_facecolor('#fafafa')
     
@@ -853,9 +961,12 @@ def create_supplier_charts(parent, df, supplier):
                     medianprops=dict(color='#d32f2f', linewidth=2),
                     whiskerprops=dict(color='#1976d2'),
                     capprops=dict(color='#1976d2'))
-    ax2.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=1.5, alpha=0.8)
-    ax2.set_title('📅 Распределение по дням недели', fontsize=12, fontweight='bold', pad=10)
-    ax2.set_ylabel('Отклонение (мин)', fontsize=10)
+    ax2.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=1.5, alpha=0.8, label='График')
+    ax2.set_title('📅 Распределение по дням недели\n(Коробка = 50% заказов, Красная линия = среднее)', 
+                 fontsize=11, fontweight='bold', pad=10)
+    ax2.set_ylabel('Отклонение от графика (минуты)', fontsize=9)
+    ax2.set_xlabel('День недели', fontsize=10)
+    ax2.legend(fontsize=8, loc='upper right', framealpha=0.9)
     ax2.grid(True, alpha=0.2, axis='y', linestyle='--')
     ax2.set_facecolor('#fafafa')
     
@@ -869,10 +980,12 @@ def create_supplier_charts(parent, df, supplier):
         ax3.set_yticklabels(DAYS_SHORT)
         ax3.set_xticks(range(len(heatmap_data.columns)))
         ax3.set_xticklabels([f"{h:02d}" for h in heatmap_data.columns], fontsize=8)
-        ax3.set_title('🔥 Тепловая карта: День × Час', fontsize=12, fontweight='bold', pad=10)
+        ax3.set_title('🔥 Тепловая карта: День × Час\n(🟢 вовремя | 🔴 опоздание)', 
+                     fontsize=11, fontweight='bold', pad=10)
         ax3.set_xlabel('Час заказа', fontsize=10)
         ax3.set_ylabel('День недели', fontsize=10)
-        fig.colorbar(im, ax=ax3, label='Откл. (мин)', shrink=0.8)
+        cbar = fig.colorbar(im, ax=ax3, shrink=0.8)
+        cbar.set_label('Отклонение (мин)\n<0 = раньше, >0 = позже', fontsize=8)
     
     # График 4: Медиана по часам с доверительным интервалом
     hour_stats = df.groupby('hour')['Разница во времени привоза (мин.)'].agg(['median', 'std', 'count'])
@@ -884,14 +997,15 @@ def create_supplier_charts(parent, df, supplier):
         stds = hour_stats['std'].fillna(0)
         
         ax4.plot(hours, medians, marker='o', color='#1976d2', linewidth=3, markersize=8, 
-                label='Медиана', markeredgecolor='white', markeredgewidth=2)
+                label='Среднее отклонение', markeredgecolor='white', markeredgewidth=2)
         ax4.fill_between(hours, medians - stds, medians + stds, alpha=0.2, color='#2196f3', 
-                        label='±1 ст. откл.')
-        ax4.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=2, alpha=0.8, label='График')
-        ax4.set_title('⏰ Отклонение по часам', fontsize=12, fontweight='bold', pad=10)
+                        label='Диапазон отклонений')
+        ax4.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=2, alpha=0.8, label='График (0)')
+        ax4.set_title('⏰ Отклонение по часам заказа\n(Выше 0 = опоздание, Ниже 0 = ранний привоз)', 
+                     fontsize=11, fontweight='bold', pad=10)
         ax4.set_xlabel('Час заказа', fontsize=10)
-        ax4.set_ylabel('Медиана откл. (мин)', fontsize=10)
-        ax4.legend(fontsize=9)
+        ax4.set_ylabel('Отклонение (минуты)', fontsize=9)
+        ax4.legend(fontsize=8, loc='best', framealpha=0.9)
         ax4.grid(True, alpha=0.2, linestyle='--')
         ax4.set_facecolor('#fafafa')
         ax4.set_xticks(range(6, 22, 2))
@@ -923,15 +1037,17 @@ def create_supplier_charts(parent, df, supplier):
             ax5.plot(dates, p(range(len(daily_stats))), "--", color='#7b1fa2', 
                     linewidth=2, label=f'Тренд: {z[0]:.2f} мин/день', alpha=0.7)
         
-        ax5.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=2, alpha=0.8)
-        ax5.set_title('📈 Динамика отклонений', fontsize=12, fontweight='bold', pad=10)
+        ax5.axhline(y=0, color=COLORS['success'], linestyle='--', linewidth=2, alpha=0.8, label='График')
+        ax5.set_title('📈 Динамика отклонений во времени\n(Размер точки = количество заказов)', 
+                     fontsize=11, fontweight='bold', pad=10)
         ax5.set_xlabel('Дата', fontsize=10)
-        ax5.set_ylabel('Медиана откл. (мин)', fontsize=10)
-        ax5.legend(fontsize=9)
+        ax5.set_ylabel('Отклонение (минуты)', fontsize=9)
+        ax5.legend(fontsize=8, loc='best', framealpha=0.9)
         ax5.grid(True, alpha=0.2, linestyle='--')
         ax5.set_facecolor('#fafafa')
         ax5.tick_params(axis='x', rotation=45)
-        fig.colorbar(scatter, ax=ax5, label='Откл. (мин)', shrink=0.8)
+        cbar = fig.colorbar(scatter, ax=ax5, shrink=0.8)
+        cbar.set_label('Отклонение (мин)', fontsize=8)
     
     # График 6: Процент вовремя по дням
     weekday_ontime = []
@@ -952,13 +1068,15 @@ def create_supplier_charts(parent, df, supplier):
         ax6.text(bar.get_x() + bar.get_width()/2., height + 1,
                 f'{value:.0f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
     
-    ax6.axhline(y=80, color=COLORS['success'], linestyle='--', linewidth=1.5, alpha=0.5, label='Цель: 80%')
+    ax6.axhline(y=80, color=COLORS['success'], linestyle='--', linewidth=2, alpha=0.7, label='Цель: 80%')
     ax6.set_xticks(range(7))
     ax6.set_xticklabels(DAYS_SHORT)
     ax6.set_ylim(0, 105)
-    ax6.set_title('✅ % вовремя по дням (±30 мин)', fontsize=12, fontweight='bold', pad=10)
-    ax6.set_ylabel('% вовремя', fontsize=10)
-    ax6.legend(fontsize=9)
+    ax6.set_title('✅ Процент вовремя по дням\n(🟢 ≥80% отлично | 🟠 60-80% норма | 🔴 <60% плохо)', 
+                 fontsize=11, fontweight='bold', pad=10)
+    ax6.set_ylabel('Процент заказов вовремя (±30 мин)', fontsize=9)
+    ax6.set_xlabel('День недели', fontsize=10)
+    ax6.legend(fontsize=8, loc='lower right', framealpha=0.9)
     ax6.grid(True, alpha=0.2, axis='y', linestyle='--')
     ax6.set_facecolor('#fafafa')
     
