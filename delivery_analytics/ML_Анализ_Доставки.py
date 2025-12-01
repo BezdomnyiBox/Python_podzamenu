@@ -569,16 +569,18 @@ def show_orders_for_day(supplier, warehouse, day, parent_df):
     tk.Label(header, text=f"Всего заказов: {len(day_data)}", font=("Segoe UI", 10),
             bg=COLORS['info'], fg='white').pack(pady=(0, 10))
     
-    # Таблица
+    # Таблица с прокруткой
+    table_frame = tk.Frame(win, bg=COLORS['bg'])
+    table_frame.pack(fill='both', expand=True, padx=10, pady=10)
+    
     cols = ('№ заказа', 'Дата заказа', 'Час', 'План привоза', 'Факт привоза', 'Откл. (мин)')
-    tree = SortableTreeview(win, columns=cols, show='headings', height=20)
+    tree = SortableTreeview(table_frame, columns=cols, show='headings', height=20)
     tree.column('№ заказа', width=100)
     tree.column('Дата заказа', width=150)
     tree.column('Час', width=80)
     tree.column('План привоза', width=180)
     tree.column('Факт привоза', width=180)
     tree.column('Откл. (мин)', width=100)
-    tree.pack(fill='both', expand=True, padx=10, pady=10)
     
     for _, row in day_data.iterrows():
         dev = row['Разница во времени привоза (мин.)']
@@ -613,6 +615,18 @@ def show_orders_for_day(supplier, warehouse, day, parent_df):
     
     tree.bind('<Double-1>', on_click)
     
+    # Прокрутка для таблицы
+    scrollbar_v = ttk.Scrollbar(table_frame, orient='vertical', command=tree.yview)
+    scrollbar_h = ttk.Scrollbar(table_frame, orient='horizontal', command=tree.xview)
+    tree.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
+    
+    # Размещение через grid
+    tree.grid(row=0, column=0, sticky='nsew')
+    scrollbar_v.grid(row=0, column=1, sticky='ns')
+    scrollbar_h.grid(row=1, column=0, sticky='ew')
+    table_frame.grid_rowconfigure(0, weight=1)
+    table_frame.grid_columnconfigure(0, weight=1)
+    
     tk.Label(win, text="💡 Двойной клик на заказ — открыть в CRM", 
             font=("Segoe UI", 9), fg=COLORS['text_light'], bg=COLORS['bg']).pack(pady=5)
 
@@ -638,16 +652,18 @@ def show_orders_for_hour(supplier, warehouse, hour, parent_df):
     tk.Label(header, text=f"Всего заказов: {len(hour_data)}", font=("Segoe UI", 10),
             bg=COLORS['warning'], fg='white').pack(pady=(0, 10))
     
-    # Таблица
+    # Таблица с прокруткой
+    table_frame = tk.Frame(win, bg=COLORS['bg'])
+    table_frame.pack(fill='both', expand=True, padx=10, pady=10)
+    
     cols = ('№ заказа', 'День', 'Дата заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
-    tree = SortableTreeview(win, columns=cols, show='headings', height=20)
+    tree = SortableTreeview(table_frame, columns=cols, show='headings', height=20)
     tree.column('№ заказа', width=100)
     tree.column('День', width=80)
     tree.column('Дата заказа', width=150)
     tree.column('План привоза', width=180)
     tree.column('Факт привоза', width=180)
     tree.column('Откл. (мин)', width=100)
-    tree.pack(fill='both', expand=True, padx=10, pady=10)
     
     for _, row in hour_data.iterrows():
         dev = row['Разница во времени привоза (мин.)']
@@ -681,6 +697,18 @@ def show_orders_for_hour(supplier, warehouse, hour, parent_df):
             open_order_in_crm(order_id)
     
     tree.bind('<Double-1>', on_click)
+    
+    # Прокрутка для таблицы
+    scrollbar_v = ttk.Scrollbar(table_frame, orient='vertical', command=tree.yview)
+    scrollbar_h = ttk.Scrollbar(table_frame, orient='horizontal', command=tree.xview)
+    tree.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
+    
+    # Размещение через grid
+    tree.grid(row=0, column=0, sticky='nsew')
+    scrollbar_v.grid(row=0, column=1, sticky='ns')
+    scrollbar_h.grid(row=1, column=0, sticky='ew')
+    table_frame.grid_rowconfigure(0, weight=1)
+    table_frame.grid_columnconfigure(0, weight=1)
     
     tk.Label(win, text="💡 Двойной клик на заказ — открыть в CRM", 
             font=("Segoe UI", 9), fg=COLORS['text_light'], bg=COLORS['bg']).pack(pady=5)
@@ -752,11 +780,14 @@ def show_supplier_details(supplier, warehouse):
     frame_weekday = ttk.Frame(notebook)
     notebook.add(frame_weekday, text="📅 По дням")
     
+    # Frame для таблицы с прокруткой
+    table_frame_wd = tk.Frame(frame_weekday, bg=COLORS['bg'])
+    table_frame_wd.pack(fill='both', expand=True, padx=10, pady=10)
+    
     cols_wd = ('День', 'Заказов', 'Среднее откл.', 'Медиана', 'Ст. откл.', '% вовремя')
-    tree_wd = SortableTreeview(frame_weekday, columns=cols_wd, show='headings', height=12)
+    tree_wd = SortableTreeview(table_frame_wd, columns=cols_wd, show='headings', height=12)
     for col in cols_wd:
         tree_wd.column(col, width=100)
-    tree_wd.pack(fill='both', expand=True, padx=10, pady=10)
     
     for day_idx, day in enumerate(DAYS_RU):
         day_data = subset[subset['День_недели'] == day]
@@ -773,15 +804,30 @@ def show_supplier_details(supplier, warehouse):
             f"{std_dev:.1f}", f"{on_time:.1f}%"
         ))
     
+    # Прокрутка для таблицы tree_wd
+    scrollbar_wd_v = ttk.Scrollbar(table_frame_wd, orient='vertical', command=tree_wd.yview)
+    scrollbar_wd_h = ttk.Scrollbar(table_frame_wd, orient='horizontal', command=tree_wd.xview)
+    tree_wd.configure(yscrollcommand=scrollbar_wd_v.set, xscrollcommand=scrollbar_wd_h.set)
+    
+    # Размещение через grid
+    tree_wd.grid(row=0, column=0, sticky='nsew')
+    scrollbar_wd_v.grid(row=0, column=1, sticky='ns')
+    scrollbar_wd_h.grid(row=1, column=0, sticky='ew')
+    table_frame_wd.grid_rowconfigure(0, weight=1)
+    table_frame_wd.grid_columnconfigure(0, weight=1)
+    
     # === Вкладка 3: По часам ===
     frame_hour = ttk.Frame(notebook)
     notebook.add(frame_hour, text="⏰ По часам")
     
+    # Frame для таблицы с прокруткой
+    table_frame_hr = tk.Frame(frame_hour, bg=COLORS['bg'])
+    table_frame_hr.pack(fill='both', expand=True, padx=10, pady=10)
+    
     cols_hr = ('Час', 'Заказов', 'Среднее откл.', 'Медиана', '% вовремя')
-    tree_hr = SortableTreeview(frame_hour, columns=cols_hr, show='headings', height=15)
+    tree_hr = SortableTreeview(table_frame_hr, columns=cols_hr, show='headings', height=15)
     for col in cols_hr:
         tree_hr.column(col, width=100)
-    tree_hr.pack(fill='both', expand=True, padx=10, pady=10)
     
     subset['Час'] = subset['Время заказа позиции'].dt.hour
     for hour in range(6, 22):
@@ -797,6 +843,18 @@ def show_supplier_details(supplier, warehouse):
             f"{hour:02d}:00", len(hour_data), f"{mean_dev:+.1f}", 
             f"{median_dev:+.1f}", f"{on_time:.1f}%"
         ))
+    
+    # Прокрутка для таблицы tree_hr
+    scrollbar_hr_v = ttk.Scrollbar(table_frame_hr, orient='vertical', command=tree_hr.yview)
+    scrollbar_hr_h = ttk.Scrollbar(table_frame_hr, orient='horizontal', command=tree_hr.xview)
+    tree_hr.configure(yscrollcommand=scrollbar_hr_v.set, xscrollcommand=scrollbar_hr_h.set)
+    
+    # Размещение через grid
+    tree_hr.grid(row=0, column=0, sticky='nsew')
+    scrollbar_hr_v.grid(row=0, column=1, sticky='ns')
+    scrollbar_hr_h.grid(row=1, column=0, sticky='ew')
+    table_frame_hr.grid_rowconfigure(0, weight=1)
+    table_frame_hr.grid_columnconfigure(0, weight=1)
     
     # Обработчики двойного клика для раскрывающихся списков
     def on_weekday_double_click(event):
@@ -956,6 +1014,7 @@ def create_supplier_charts(parent, df, supplier):
     ax1.set_xlabel('Отклонение от графика (минуты)\nОтрицательные = раньше, Положительные = позже', 
                    fontsize=9)
     ax1.set_ylabel('Количество заказов', fontsize=10)
+    ax1.set_xlim(-500, 500)  # Ограничиваем ось X от -500 до 500 минут
     ax1.legend(fontsize=8, loc='upper right', framealpha=0.9)
     ax1.grid(True, alpha=0.2, linestyle='--')
     ax1.set_facecolor('#fafafa')
@@ -1165,9 +1224,13 @@ def show_recommendation_details(rec):
         examples_frame = tk.LabelFrame(win, text="📦 Примеры заказов (последние)", font=("Segoe UI", 10, "bold"), bg=COLORS['bg'])
         examples_frame.pack(fill='both', expand=True, padx=20, pady=10)
         
+        # Frame для таблицы с прокруткой
+        table_frame_examples = tk.Frame(examples_frame, bg=COLORS['bg'])
+        table_frame_examples.pack(fill='both', expand=True, padx=10, pady=10)
+        
         # Таблица примеров
         cols = ('№ заказа', 'Дата', 'Время заказа', 'План', 'Факт', 'Откл.')
-        tree_examples = ttk.Treeview(examples_frame, columns=cols, show='headings', height=5)
+        tree_examples = ttk.Treeview(table_frame_examples, columns=cols, show='headings', height=5)
         
         tree_examples.column('№ заказа', width=100)
         tree_examples.column('Дата', width=100)
@@ -1202,7 +1265,17 @@ def show_recommendation_details(rec):
         tree_examples.tag_configure('medium', foreground=COLORS['warning'])
         tree_examples.tag_configure('bad', foreground=COLORS['danger'])
         
-        tree_examples.pack(fill='both', expand=True, padx=10, pady=10)
+        # Прокрутка для таблицы tree_examples
+        scrollbar_examples_v = ttk.Scrollbar(table_frame_examples, orient='vertical', command=tree_examples.yview)
+        scrollbar_examples_h = ttk.Scrollbar(table_frame_examples, orient='horizontal', command=tree_examples.xview)
+        tree_examples.configure(yscrollcommand=scrollbar_examples_v.set, xscrollcommand=scrollbar_examples_h.set)
+        
+        # Размещение через grid
+        tree_examples.grid(row=0, column=0, sticky='nsew')
+        scrollbar_examples_v.grid(row=0, column=1, sticky='ns')
+        scrollbar_examples_h.grid(row=1, column=0, sticky='ew')
+        table_frame_examples.grid_rowconfigure(0, weight=1)
+        table_frame_examples.grid_columnconfigure(0, weight=1)
         
         # Подсказка для клика
         tk.Label(
@@ -1403,6 +1476,7 @@ def show_overall_charts():
     ax3.set_title('📊 Распределение отклонений', fontsize=12, fontweight='bold', pad=10)
     ax3.set_xlabel('Отклонение (мин)', fontsize=10)
     ax3.set_ylabel('Количество', fontsize=10)
+    ax3.set_xlim(-500, 500)  # Ограничиваем ось X от -500 до 500 минут
     ax3.legend(fontsize=9)
     ax3.grid(True, alpha=0.2, linestyle='--')
     ax3.set_facecolor('#fafafa')
@@ -1600,8 +1674,12 @@ lbl_stats_count = tk.Label(stats_header, text="Поставщиков: 0", font=
                           bg=COLORS['bg'], fg=COLORS['primary'])
 lbl_stats_count.pack(side='right')
 
+# Frame для таблицы с прокруткой
+table_frame_stats = tk.Frame(frame_stats, bg=COLORS['bg'])
+table_frame_stats.pack(fill='both', expand=True, padx=10, pady=5)
+
 cols_stats = ('Поставщик', 'Склад', 'Заказов', 'Ср. откл.', 'Медиана', 'Ст. откл.', '% вовремя')
-tree_stats = SortableTreeview(frame_stats, columns=cols_stats, show='headings', height=22)
+tree_stats = SortableTreeview(table_frame_stats, columns=cols_stats, show='headings', height=22)
 tree_stats.column('Поставщик', width=200)
 tree_stats.column('Склад', width=180)
 tree_stats.column('Заказов', width=80)
@@ -1609,7 +1687,6 @@ tree_stats.column('Ср. откл.', width=80)
 tree_stats.column('Медиана', width=80)
 tree_stats.column('Ст. откл.', width=80)
 tree_stats.column('% вовремя', width=90)
-tree_stats.pack(fill='both', expand=True, padx=10, pady=5)
 
 tree_stats.tag_configure('good', foreground=COLORS['success'])
 tree_stats.tag_configure('medium', foreground=COLORS['warning'])
@@ -1617,8 +1694,17 @@ tree_stats.tag_configure('bad', foreground=COLORS['danger'])
 
 tree_stats.bind('<Double-1>', on_stats_double_click)
 
-scrollbar_stats = ttk.Scrollbar(frame_stats, orient='vertical', command=tree_stats.yview)
-tree_stats.configure(yscrollcommand=scrollbar_stats.set)
+# Прокрутка для таблицы tree_stats
+scrollbar_stats_v = ttk.Scrollbar(table_frame_stats, orient='vertical', command=tree_stats.yview)
+scrollbar_stats_h = ttk.Scrollbar(table_frame_stats, orient='horizontal', command=tree_stats.xview)
+tree_stats.configure(yscrollcommand=scrollbar_stats_v.set, xscrollcommand=scrollbar_stats_h.set)
+
+# Размещение через grid
+tree_stats.grid(row=0, column=0, sticky='nsew')
+scrollbar_stats_v.grid(row=0, column=1, sticky='ns')
+scrollbar_stats_h.grid(row=1, column=0, sticky='ew')
+table_frame_stats.grid_rowconfigure(0, weight=1)
+table_frame_stats.grid_columnconfigure(0, weight=1)
 
 # --- Вкладка 2: Рекомендации ---
 frame_rec = ttk.Frame(notebook)
@@ -1637,8 +1723,12 @@ lbl_rec_count = tk.Label(rec_header, text="Рекомендаций: 0", font=("
                         bg=COLORS['bg'], fg=COLORS['primary'])
 lbl_rec_count.pack(side='right')
 
+# Frame для таблицы с прокруткой
+table_frame_rec = tk.Frame(frame_rec, bg=COLORS['bg'])
+table_frame_rec.pack(fill='both', expand=True, padx=10, pady=5)
+
 cols_rec = ('Поставщик', 'Склад', 'День', 'Час', 'Сдвиг', 'Уверенность', 'Тренд', 'Применить с')
-tree_rec = SortableTreeview(frame_rec, columns=cols_rec, show='headings', height=20)
+tree_rec = SortableTreeview(table_frame_rec, columns=cols_rec, show='headings', height=20)
 tree_rec.column('Поставщик', width=180)
 tree_rec.column('Склад', width=150)
 tree_rec.column('День', width=50)
@@ -1647,13 +1737,24 @@ tree_rec.column('Сдвиг', width=80)
 tree_rec.column('Уверенность', width=90)
 tree_rec.column('Тренд', width=110)
 tree_rec.column('Применить с', width=100)
-tree_rec.pack(fill='both', expand=True, padx=10, pady=5)
 
 tree_rec.tag_configure('high', background='#c8e6c9')
 tree_rec.tag_configure('med', background='#fff9c4')
 tree_rec.tag_configure('low', background='#ffecb3')
 
 tree_rec.bind('<Double-1>', on_rec_double_click)
+
+# Прокрутка для таблицы tree_rec
+scrollbar_rec_v = ttk.Scrollbar(table_frame_rec, orient='vertical', command=tree_rec.yview)
+scrollbar_rec_h = ttk.Scrollbar(table_frame_rec, orient='horizontal', command=tree_rec.xview)
+tree_rec.configure(yscrollcommand=scrollbar_rec_v.set, xscrollcommand=scrollbar_rec_h.set)
+
+# Размещение через grid
+tree_rec.grid(row=0, column=0, sticky='nsew')
+scrollbar_rec_v.grid(row=0, column=1, sticky='ns')
+scrollbar_rec_h.grid(row=1, column=0, sticky='ew')
+table_frame_rec.grid_rowconfigure(0, weight=1)
+table_frame_rec.grid_columnconfigure(0, weight=1)
 
 # --- Вкладка 3: Сырые данные ---
 frame_raw = ttk.Frame(notebook)
