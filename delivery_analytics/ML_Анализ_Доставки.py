@@ -768,7 +768,7 @@ def fetch_data():
 
 
 def fetch_data_chunked(start_date, end_date, chunk_days=14):
-    """Порционная загрузка данных с сервера"""
+    """Порционная загрузка данных с сервера в формате JSON"""
     all_data = []
     current_start = start_date
     total_chunks = ((end_date - start_date).days // chunk_days) + 1
@@ -785,27 +785,48 @@ def fetch_data_chunked(start_date, end_date, chunk_days=14):
             f"{CRM_BASE_URL}/logistic/delivery_statistic"
             f"?fromDate={current_start.strftime('%Y-%m-%d')}"
             f"&toDate={current_end.strftime('%Y-%m-%d')}"
+            f"&type=jsonresponse"
         )
         
         try:
             response = requests.get(url, timeout=60)
             response.raise_for_status()
             
+            # Проверяем что это не HTML страница с ошибкой
             if b'<html' in response.content[:500]:
                 current_start = current_end + timedelta(days=1)
                 continue
             
-            excel_file = BytesIO(response.content)
-            df_chunk = pd.read_excel(excel_file, engine='openpyxl')
+            # Парсим JSON ответ
+            json_data = response.json()
             
-            if df_chunk.shape[1] >= 11 and len(df_chunk) > 0:
-                all_data.append(df_chunk)
+            if json_data.get('result') == 'success' and json_data.get('data'):
+                # Преобразуем JSON в DataFrame
+                df_chunk = pd.DataFrame(json_data['data'])
+                
+                if len(df_chunk) > 0:
+                    # Переименовываем колонки из JSON в нужный формат
+                    column_mapping = {
+                        'orderNumber': '№ заказа',
+                        'url': 'URL',
+                        'supplierName': 'Поставщик',
+                        'warehouseName': 'Склад',
+                        'branchAddress': 'ПВ',
+                        'brandName': 'Бренд',
+                        'articleSearch': 'Артикул',
+                        'expectedAssemblyTime': 'Рассчетное время привоза',
+                        'onStoreDate': 'Время поступления на склад',
+                        'orderedDate': 'Время заказа позиции',
+                        'diffMinutes': 'Разница во времени привоза (мин.)'
+                    }
+                    df_chunk = df_chunk.rename(columns=column_mapping)
+                    all_data.append(df_chunk)
             
         except Exception as e:
-            print(f"Ошибка: {e}")
+            print(f"Ошибка загрузки данных: {e}")
         
         current_start = current_end + timedelta(days=1)
-        time.sleep(0.3)
+        time.sleep(0.2)  # Уменьшил задержку т.к. JSON быстрее
     
     root.after(0, progress_bar.stop)
     
@@ -814,12 +835,15 @@ def fetch_data_chunked(start_date, end_date, chunk_days=14):
     
     df = pd.concat(all_data, ignore_index=True)
     
-    df.columns = [
-        '№ заказа', 'URL', 'Поставщик', 'Склад', 'ПВ', 'Бренд', 'Артикул',
-        'Рассчетное время привоза', 'Время поступления на склад', 'Время заказа позиции',
-        'Разница во времени привоза (мин.)'
-    ]
+    # Убеждаемся что все нужные колонки есть
+    required_cols = ['№ заказа', 'URL', 'Поставщик', 'Склад', 'ПВ', 'Бренд', 'Артикул',
+                     'Рассчетное время привоза', 'Время поступления на склад', 'Время заказа позиции',
+                     'Разница во времени привоза (мин.)']
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = ''
     
+    # Преобразуем даты
     for col in ['Рассчетное время привоза', 'Время поступления на склад', 'Время заказа позиции']:
         df[col] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
     
