@@ -187,6 +187,7 @@ def fetch_data():
                 
                 root.after(0, update_pv_filter_options)
                 root.after(0, update_stats_display)
+                root.after(0, update_weekday_stats_display)
                 root.after(0, update_raw_data_display)
                 root.after(0, lambda: update_status(f"✅ Загружено {len(df):,} записей", "success"))
                 root.after(0, train_model_async)
@@ -295,6 +296,7 @@ def fetch_historical_data():
                 
                 root.after(0, update_pv_filter_options)
                 root.after(0, update_stats_display)
+                root.after(0, update_weekday_stats_display)
                 root.after(0, update_raw_data_display)
                 root.after(0, lambda: update_status(f"✅ Загружено {len(df):,} записей. Сохранено в кэш.", "success"))
                 root.after(0, lambda: messagebox.showinfo(
@@ -339,6 +341,7 @@ def load_cached_data():
         progress_bar.stop()
         update_pv_filter_options()
         update_stats_display()
+        update_weekday_stats_display()
         update_raw_data_display()
         update_status(f"✅ Загружено {len(df):,} записей из кэша ({cache_date.strftime('%d.%m.%Y')})", "success")
         
@@ -1784,6 +1787,7 @@ def apply_pv_filter(event=None):
         current_pv_filter = selected
     
     update_stats_display()
+    update_weekday_stats_display()
     update_raw_data_display()
     update_status(f"🏬 Фильтр: {selected} | Записей: {len(df_current):,}", "info")
 
@@ -1918,7 +1922,141 @@ scrollbar_rec_h.grid(row=1, column=0, sticky='ew')
 table_frame_rec.grid_rowconfigure(0, weight=1)
 table_frame_rec.grid_columnconfigure(0, weight=1)
 
-# --- Вкладка 3: Сырые данные ---
+# --- Вкладка 3: Статистика по дням недели ---
+frame_weekday_stats = ttk.Frame(notebook)
+notebook.add(frame_weekday_stats, text="📅 По дням недели")
+
+weekday_info = tk.Frame(frame_weekday_stats, bg='#e8f5e9')
+weekday_info.pack(fill='x', padx=10, pady=10)
+
+tk.Label(weekday_info, text="📅 Статистика по дням недели.\n"
+        "Показывает в какие дни поставщики чаще опаздывают или приезжают вовремя.",
+        font=("Segoe UI", 9), bg='#e8f5e9', fg=COLORS['text'], justify='left').pack(padx=10, pady=8)
+
+weekday_header = tk.Frame(frame_weekday_stats, bg=COLORS['bg'])
+weekday_header.pack(fill='x', padx=10)
+lbl_weekday_count = tk.Label(weekday_header, text="", font=("Segoe UI", 9, "bold"),
+                            bg=COLORS['bg'], fg=COLORS['success'])
+lbl_weekday_count.pack(side='right')
+
+# Frame для таблицы с прокруткой
+table_frame_weekday = tk.Frame(frame_weekday_stats, bg=COLORS['bg'])
+table_frame_weekday.pack(fill='both', expand=True, padx=10, pady=5)
+
+cols_weekday = ('День недели', 'Заказов', 'Уник. заказов', 'Ср. откл.', 'Медиана', 'Ст. откл.', '% вовремя', '% ранних', '% поздних', 'Худший час')
+tree_weekday = SortableTreeview(table_frame_weekday, columns=cols_weekday, show='headings', height=10)
+tree_weekday.column('День недели', width=120)
+tree_weekday.column('Заказов', width=80)
+tree_weekday.column('Уник. заказов', width=100)
+tree_weekday.column('Ср. откл.', width=80)
+tree_weekday.column('Медиана', width=80)
+tree_weekday.column('Ст. откл.', width=80)
+tree_weekday.column('% вовремя', width=90)
+tree_weekday.column('% ранних', width=80)
+tree_weekday.column('% поздних', width=80)
+tree_weekday.column('Худший час', width=100)
+
+tree_weekday.tag_configure('good', foreground=COLORS['success'])
+tree_weekday.tag_configure('medium', foreground=COLORS['warning'])
+tree_weekday.tag_configure('bad', foreground=COLORS['danger'])
+
+# Прокрутка для таблицы tree_weekday
+scrollbar_weekday_v = ttk.Scrollbar(table_frame_weekday, orient='vertical', command=tree_weekday.yview)
+scrollbar_weekday_h = ttk.Scrollbar(table_frame_weekday, orient='horizontal', command=tree_weekday.xview)
+tree_weekday.configure(yscrollcommand=scrollbar_weekday_v.set, xscrollcommand=scrollbar_weekday_h.set)
+
+# Размещение через grid
+tree_weekday.grid(row=0, column=0, sticky='nsew')
+scrollbar_weekday_v.grid(row=0, column=1, sticky='ns')
+scrollbar_weekday_h.grid(row=1, column=0, sticky='ew')
+table_frame_weekday.grid_rowconfigure(0, weight=1)
+table_frame_weekday.grid_columnconfigure(0, weight=1)
+
+
+def update_weekday_stats_display():
+    """Обновление статистики по дням недели"""
+    if df_current is None:
+        return
+    
+    for item in tree_weekday.get_children():
+        tree_weekday.delete(item)
+    
+    # Добавляем колонку дня недели если её нет
+    df_temp = df_current.copy()
+    if 'День_недели' not in df_temp.columns:
+        df_temp['День_недели'] = df_temp['Время заказа позиции'].apply(get_weekday_name)
+    if 'Час' not in df_temp.columns:
+        df_temp['Час'] = df_temp['Время заказа позиции'].dt.hour
+    
+    best_day = None
+    best_pct = 0
+    worst_day = None
+    worst_pct = 100
+    
+    for day in DAYS_RU:
+        day_data = df_temp[df_temp['День_недели'] == day]
+        if len(day_data) < 1:
+            continue
+        
+        deviations = day_data['Разница во времени привоза (мин.)'].dropna()
+        if len(deviations) < 1:
+            continue
+        
+        total = len(deviations)
+        on_time = deviations.between(-30, 30).sum()
+        early = (deviations < -30).sum()
+        late = (deviations > 30).sum()
+        
+        on_time_pct = (on_time / total) * 100
+        early_pct = (early / total) * 100
+        late_pct = (late / total) * 100
+        
+        # Определяем лучший и худший день
+        if on_time_pct > best_pct:
+            best_pct = on_time_pct
+            best_day = day
+        if on_time_pct < worst_pct:
+            worst_pct = on_time_pct
+            worst_day = day
+        
+        # Находим худший час (с наибольшим средним опозданием)
+        hour_stats = day_data.groupby('Час')['Разница во времени привоза (мин.)'].mean()
+        worst_hour = hour_stats.idxmax() if len(hour_stats) > 0 else None
+        worst_hour_val = hour_stats.max() if len(hour_stats) > 0 else 0
+        worst_hour_str = f"{worst_hour:02d}:00 ({worst_hour_val:+.0f})" if worst_hour is not None else "-"
+        
+        # Определяем цвет строки
+        tags = ()
+        if on_time_pct >= 80:
+            tags = ('good',)
+        elif on_time_pct >= 60:
+            tags = ('medium',)
+        else:
+            tags = ('bad',)
+        
+        tree_weekday.insert('', 'end', values=(
+            day,
+            f"{total:,}",
+            f"{day_data['№ заказа'].nunique():,}",
+            f"{deviations.mean():+.1f}",
+            f"{deviations.median():+.1f}",
+            f"{deviations.std():.1f}",
+            f"{on_time_pct:.1f}%",
+            f"{early_pct:.1f}%",
+            f"{late_pct:.1f}%",
+            worst_hour_str
+        ), tags=tags)
+    
+    # Обновляем заголовок с лучшим и худшим днём
+    summary = []
+    if best_day:
+        summary.append(f"✅ Лучший: {best_day} ({best_pct:.1f}%)")
+    if worst_day:
+        summary.append(f"❌ Худший: {worst_day} ({worst_pct:.1f}%)")
+    lbl_weekday_count.config(text=" | ".join(summary))
+
+
+# --- Вкладка 4: Сырые данные ---
 frame_raw = ttk.Frame(notebook)
 notebook.add(frame_raw, text="📄 Сырые данные")
 
