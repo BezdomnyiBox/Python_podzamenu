@@ -57,8 +57,8 @@ class ScheduleRecommendation:
     warehouse: str
     pv: str
     weekday: str
-    order_time_start: str          # Начало временного окна заказа
-    order_time_end: str            # Конец временного окна заказа
+    order_time_start: str          # Начало временного окна заказа (или "Заказ до")
+    order_time_end: str            # Конец временного окна заказа (или "Доставят к")
     current_expected_time: str     # Текущее ожидаемое время привоза
     recommended_time: str          # Рекомендуемое время привоза
     shift_minutes: int             # Сдвиг в минутах
@@ -67,6 +67,7 @@ class ScheduleRecommendation:
     trend_detected: str            # Обнаруженный тренд
     effective_from: str            # Рекомендуемая дата начала применения
     example_orders: List[Dict] = field(default_factory=list)  # Примеры заказов
+    schedule_window: Optional[Dict] = None  # Окно расписания (если найдено)
 
 
 class DeliveryMLPredictor:
@@ -464,7 +465,7 @@ class DeliveryMLPredictor:
         return df[(df[column] >= mean - n_std * std) & (df[column] <= mean + n_std * std)]
     
     def generate_recommendations(self, df: pd.DataFrame, 
-                                 min_samples: int = 5,
+                                 min_samples: int = 3,
                                  min_shift: int = 15) -> List[ScheduleRecommendation]:
         """
         Генерация рекомендаций по корректировке расписания.
@@ -576,6 +577,236 @@ class DeliveryMLPredictor:
         recommendations.sort(key=lambda x: (-x.confidence, -abs(x.shift_minutes)))
         
         return recommendations
+    
+    def generate_recommendations_by_schedule(self, df: pd.DataFrame, 
+                                             schedules: List[Dict],
+                                             min_samples: int = 3,
+                                             min_shift: int = 15) -> List[ScheduleRecommendation]:
+        """
+        Генерация рекомендаций с привязкой к реальным окнам расписания.
+        
+        Группирует заказы по окнам расписания вместо фиксированных часовых интервалов.
+        Время заказа должно попадать в рамки: предыдущее_окно < время_заказа <= текущее_окно.
+        Если заказ после последнего окна дня - относим к первому окну следующего дня.
+        
+        Args:
+            df: DataFrame с историческими данными
+            schedules: Список расписаний из CRM
+            min_samples: Минимальное количество записей для анализа
+            min_shift: Минимальный сдвиг для рекомендации (в минутах)
+        
+        Returns:
+            Список рекомендаций по корректировке
+        """
+        if df is None or df.empty or not schedules:
+            return self.generate_recommendations(df, min_samples, min_shift)
+        
+        # Подготовка данных
+        df_prep = self.prepare_features(df.copy())
+        df_prep = self._encode_pv(df_prep)
+        
+        # Добавляем колонку минут от начала дня
+        df_prep['order_minutes'] = df_prep['hour'] * 60 + df_prep['Время заказа позиции'].dt.minute
+        
+        recommendations = []
+        
+        # Удаляем строки с NaN в ключевых полях
+        df_prep = df_prep.dropna(subset=['Разница во времени привоза (мин.)', 'Поставщик', 'Склад'])
+        
+        # Индексируем расписание: {(warehouse_lower, pv_lower, weekday): [(time_minutes, schedule), ...]}
+        schedule_index = {}
+        for sched in schedules:
+            warehouse = (sched.get('warehouseName') or '').lower().strip()
+            branch = (sched.get('branchAddress') or '').lower().strip()
+            weekday = sched.get('weekday', 0)
+            
+            if not warehouse or not weekday:
+                continue
+            
+            key = (warehouse, branch, weekday)
+            
+            try:
+                time_str = sched.get('timeOrder', '00:00')
+                h, m = map(int, time_str.split(':'))
+                time_minutes = h * 60 + m
+            except:
+                continue
+            
+            if key not in schedule_index:
+                schedule_index[key] = []
+            schedule_index[key].append((time_minutes, sched))
+        
+        # Сортируем окна по времени
+        for key in schedule_index:
+            schedule_index[key].sort(key=lambda x: x[0])
+        
+        # Функция определения окна для заказа
+        def find_window_for_order(warehouse, pv, weekday, order_minutes):
+            """Найти окно расписания для заказа"""
+            wh_lower = warehouse.lower().strip()
+            pv_lower = (pv or '').lower().strip()
+            
+            # Ищем точное совпадение
+            key = (wh_lower, pv_lower, weekday + 1)  # weekday в данных 0-6, в расписании 1-7
+            windows = schedule_index.get(key, [])
+            
+            # Если не нашли точное совпадение по ПВ, ищем по первому слову склада
+            if not windows:
+                wh_first = wh_lower.split()[0] if wh_lower else ''
+                for k, v in schedule_index.items():
+                    if k[0].startswith(wh_first) and k[2] == weekday + 1:
+                        if not pv_lower or k[1] == pv_lower or not k[1]:
+                            windows = v
+                            break
+            
+            if not windows:
+                return None, False
+            
+            # Ищем подходящее окно
+            for i, (window_minutes, sched) in enumerate(windows):
+                if order_minutes <= window_minutes:
+                    return sched, False
+            
+            # Заказ после последнего окна - ищем первое окно следующего дня
+            next_weekday = ((weekday + 1) % 7) + 1
+            for k, v in schedule_index.items():
+                if k[0] == wh_lower and k[2] == next_weekday:
+                    if not pv_lower or k[1] == pv_lower or not k[1]:
+                        return v[0][1], True  # Первое окно следующего дня
+            
+            return None, False
+        
+        # Группируем заказы по (поставщик, склад, ПВ, день, окно расписания)
+        processed_groups = {}
+        
+        for idx, row in df_prep.iterrows():
+            supplier = row['Поставщик']
+            warehouse = row['Склад']
+            pv = row.get('ПВ', '')
+            weekday = row['day_of_week']
+            order_minutes = row['order_minutes']
+            deviation = row['Разница во времени привоза (мин.)']
+            
+            if pd.isna(deviation):
+                continue
+            
+            sched, is_next_day = find_window_for_order(warehouse, pv, weekday, order_minutes)
+            if sched is None:
+                continue
+            
+            time_order = sched.get('timeOrder', '')
+            actual_weekday = weekday if not is_next_day else (weekday + 1) % 7
+            
+            key = (supplier, warehouse, pv, actual_weekday, time_order)
+            
+            if key not in processed_groups:
+                processed_groups[key] = {
+                    'data': [],
+                    'schedule': sched,
+                    'is_next_day': is_next_day
+                }
+            
+            processed_groups[key]['data'].append({
+                'deviation': deviation,
+                'date': row['Время заказа позиции'],
+                'order_id': row.get('№ заказа', '')
+            })
+        
+        # Анализируем каждую группу
+        for key, group_info in processed_groups.items():
+            supplier, warehouse, pv, weekday, time_order = key
+            data = group_info['data']
+            sched = group_info['schedule']
+            
+            if len(data) < min_samples:
+                continue
+            
+            # Сортируем по дате
+            data.sort(key=lambda x: x['date'])
+            deviations = [d['deviation'] for d in data]
+            
+            # Разделяем на периоды (последние 2 недели vs предыдущие)
+            cutoff_idx = len(data) * 2 // 3  # Примерно 2/3 старые, 1/3 новые
+            if cutoff_idx < 3 or len(data) - cutoff_idx < 3:
+                continue
+            
+            recent_devs = deviations[cutoff_idx:]
+            older_devs = deviations[:cutoff_idx]
+            
+            import statistics
+            recent_median = statistics.median(recent_devs)
+            older_median = statistics.median(older_devs)
+            
+            shift = recent_median - older_median
+            
+            if abs(recent_median) < 30 and abs(shift) < min_shift:
+                continue
+            
+            # Уверенность
+            try:
+                std = statistics.stdev(recent_devs) if len(recent_devs) > 1 else 30
+            except:
+                std = 30
+            
+            count_factor = min(1.0, len(recent_devs) / 15)
+            std_factor = max(0, min(1, 1 - std / 60))
+            confidence = 0.4 + 0.3 * count_factor + 0.3 * std_factor
+            confidence = round(min(0.95, confidence), 2)
+            
+            weekday_name = self.DAYS_RU[weekday]
+            shift_minutes = int(round(recent_median))
+            
+            # Формируем текст рекомендации
+            duration = sched.get('deliveryDuration', 0)
+            new_duration = duration + shift_minutes
+            
+            if shift_minutes > 0:
+                reason = f"Систематические опоздания в {weekday_name} для окна 'Заказ до {time_order}'. " \
+                         f"Медиана отклонений: {shift_minutes:+d} мин. Рекомендуется увеличить длительность доставки."
+            else:
+                reason = f"Ранние привозы в {weekday_name} для окна 'Заказ до {time_order}'. " \
+                         f"Медиана отклонений: {shift_minutes:+d} мин. Можно уменьшить длительность доставки."
+            
+            # Примеры заказов
+            examples = [
+                {'order_id': d['order_id'], 'date': d['date'].strftime('%d.%m.%Y %H:%M') if hasattr(d['date'], 'strftime') else str(d['date']), 'deviation': d['deviation']}
+                for d in data[-5:]
+            ]
+            
+            rec = ScheduleRecommendation(
+                supplier=supplier,
+                warehouse=warehouse,
+                pv=pv,
+                weekday=weekday_name,
+                order_time_start=time_order,  # "Заказ до"
+                order_time_end=self._calculate_deliver_by(time_order, duration),  # "Доставят к"
+                current_expected_time=f"Длительность: {duration} мин",
+                recommended_time=f"Длительность: {new_duration} мин ({shift_minutes:+d})",
+                shift_minutes=shift_minutes,
+                confidence=confidence,
+                reason=reason,
+                trend_detected='delay' if shift_minutes > 0 else 'early',
+                effective_from=(datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y'),
+                example_orders=examples,
+                schedule_window=sched
+            )
+            recommendations.append(rec)
+        
+        # Сортируем по уверенности
+        recommendations.sort(key=lambda x: (-x.confidence, -abs(x.shift_minutes)))
+        
+        return recommendations
+    
+    def _calculate_deliver_by(self, time_order: str, duration: int) -> str:
+        """Вычислить время 'Доставят к' на основе 'Заказ до' и длительности"""
+        try:
+            h, m = map(int, time_order.split(':'))
+            total_minutes = h * 60 + m + duration
+            new_h = (total_minutes // 60) % 24
+            new_m = total_minutes % 60
+            return f"{new_h:02d}:{new_m:02d}"
+        except:
+            return "—"
     
     def _generate_reason(self, trend: TrendType, shift: int, weekday: str, hour: int) -> str:
         """Генерация текстового объяснения рекомендации"""
