@@ -23,6 +23,9 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+DEFAULT_PV_LABEL = "ПВ не указан"
+
+
 class TrendType(Enum):
     """Типы трендов во времени привоза"""
     STABLE = "stable"           # Стабильный
@@ -37,6 +40,7 @@ class DeliveryPrediction:
     """Результат предсказания времени привоза"""
     supplier: str
     warehouse: str
+    pv: str
     weekday: str
     order_hour: int
     predicted_delivery_time: float  # Предсказанное время в минутах от планового
@@ -51,6 +55,7 @@ class ScheduleRecommendation:
     """Рекомендация по корректировке расписания"""
     supplier: str
     warehouse: str
+    pv: str
     weekday: str
     order_time_start: str          # Начало временного окна заказа
     order_time_end: str            # Конец временного окна заказа
@@ -82,6 +87,29 @@ class DeliveryMLPredictor:
         self.label_encoders: Dict[str, LabelEncoder] = {}
         self.is_fitted = False
         self.feature_importance: Dict[str, pd.DataFrame] = {}
+        self.pv_mapping: Dict[str, int] = {}
+        self.default_pv_label = DEFAULT_PV_LABEL
+
+    def _normalize_pv(self, value: Optional[Any]) -> str:
+        """Единообразное представление значения ПВ"""
+        if value is None or pd.isna(value):
+            return self.default_pv_label
+        value_str = str(value).strip()
+        return value_str if value_str else self.default_pv_label
+
+    def _encode_pv(self, df: pd.DataFrame, fit_mode: bool = False) -> pd.DataFrame:
+        """Добавление числового признака для ПВ"""
+        df = df.copy()
+        if 'ПВ' not in df.columns:
+            df['ПВ'] = self.default_pv_label
+        df['ПВ'] = df['ПВ'].apply(self._normalize_pv)
+        if fit_mode:
+            self.pv_mapping = {}
+        for pv in df['ПВ'].unique():
+            if pv not in self.pv_mapping:
+                self.pv_mapping[pv] = len(self.pv_mapping)
+        df['pv_encoded'] = df['ПВ'].map(lambda x: self.pv_mapping.get(x, -1))
+        return df
         
     def prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -158,24 +186,27 @@ class DeliveryMLPredictor:
             raise ValueError("Нет валидных данных после очистки NaN")
         
         df = self.prepare_features(df)
-        df = self.add_rolling_features(df, ['Поставщик', 'Склад', 'day_of_week', 'hour'])
+        df = self._encode_pv(df, fit_mode=True)
+        df = self.add_rolling_features(df, ['Поставщик', 'Склад', 'ПВ', 'day_of_week', 'hour'])
         
         # Признаки для модели
         feature_cols = [
             'hour', 'day_of_week', 'week_of_year', 'day_of_month', 'month',
             'is_weekend', 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
             'rolling_mean_3', 'rolling_mean_7', 'rolling_mean_14',
-            'rolling_std_3', 'rolling_std_7', 'rolling_std_14', 'trend_7d'
+            'rolling_std_3', 'rolling_std_7', 'rolling_std_14', 'trend_7d',
+            'pv_encoded'
         ]
         
         target_col = 'Разница во времени привоза (мин.)'
         
-        # Обучаем модель для каждого поставщика-склада
-        for (supplier, warehouse), group_df in df.groupby(['Поставщик', 'Склад']):
+        # Обучаем модель для каждого поставщика-склада-ПВ
+        # Это позволяет учитывать специфику каждого ПВ при предсказании
+        for (supplier, warehouse, pv), group_df in df.groupby(['Поставщик', 'Склад', 'ПВ']):
             if len(group_df) < 10:  # Минимум 10 записей для обучения
                 continue
             
-            key = f"{supplier}_{warehouse}"
+            key = f"{supplier}_{warehouse}_{pv}"
             
             # Удаляем строки с NaN в целевой переменной
             group_df = group_df.dropna(subset=[target_col])
@@ -210,7 +241,8 @@ class DeliveryMLPredictor:
         return self
     
     def detect_trend(self, df: pd.DataFrame, supplier: str, warehouse: str,
-                    weekday: int, hour: int, lookback_days: int = 30) -> Tuple[TrendType, float]:
+                    weekday: int, hour: int, lookback_days: int = 30,
+                    pv: Optional[str] = None) -> Tuple[TrendType, float]:
         """
         Обнаружение тренда во времени привоза.
         
@@ -231,6 +263,8 @@ class DeliveryMLPredictor:
                 (df['day_of_week'] == weekday) &
                 (df['hour'] == hour)
             )
+        if pv is not None:
+            mask &= (df['ПВ'] == self._normalize_pv(pv))
         
         subset = df[mask].copy()
         subset = subset.dropna(subset=['Разница во времени привоза (мин.)'])
@@ -287,28 +321,41 @@ class DeliveryMLPredictor:
         return df
     
     def predict(self, df: pd.DataFrame, supplier: str, warehouse: str,
-               weekday: int, hour: int) -> Optional[DeliveryPrediction]:
+               weekday: int, hour: int, pv: Optional[str] = None) -> Optional[DeliveryPrediction]:
         """
         Предсказание времени привоза для заданных параметров.
         """
         if not self.is_fitted:
             raise ValueError("Модель не обучена. Сначала вызовите fit()")
         
-        key = f"{supplier}_{warehouse}"
+        # Пробуем найти модель для конкретного ПВ, если не найдена - используем общую
+        pv_normalized = self._normalize_pv(pv) if pv is not None else self.default_pv_label
+        key = f"{supplier}_{warehouse}_{pv_normalized}"
+        
+        # Fallback на общую модель поставщик-склад если нет специфичной для ПВ
         if key not in self.models:
-            return None
+            # Ищем любую модель для этого поставщика-склада
+            fallback_keys = [k for k in self.models.keys() if k.startswith(f"{supplier}_{warehouse}_")]
+            if fallback_keys:
+                key = fallback_keys[0]  # Берем первую доступную
+            else:
+                return None
         
         # Подготовка признаков для предсказания
         df = self.prepare_features(df)
-        df = self.add_rolling_features(df, ['Поставщик', 'Склад', 'day_of_week', 'hour'])
+        df = self._encode_pv(df)
+        df = self.add_rolling_features(df, ['Поставщик', 'Склад', 'ПВ', 'day_of_week', 'hour'])
         
         # Фильтруем данные для этого поставщика
+        pv_normalized = self._normalize_pv(pv) if pv is not None else None
         mask = (
             (df['Поставщик'] == supplier) &
             (df['Склад'] == warehouse) &
             (df['day_of_week'] == weekday) &
             (df['hour'] == hour)
         )
+        if pv_normalized is not None:
+            mask &= (df['ПВ'] == pv_normalized)
         subset = df[mask]
         
         if subset.empty:
@@ -321,7 +368,8 @@ class DeliveryMLPredictor:
             'hour', 'day_of_week', 'week_of_year', 'day_of_month', 'month',
             'is_weekend', 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
             'rolling_mean_3', 'rolling_mean_7', 'rolling_mean_14',
-            'rolling_std_3', 'rolling_std_7', 'rolling_std_14', 'trend_7d'
+            'rolling_std_3', 'rolling_std_7', 'rolling_std_14', 'trend_7d',
+            'pv_encoded'
         ]
         
         X = latest[feature_cols].values.reshape(1, -1)
@@ -336,7 +384,8 @@ class DeliveryMLPredictor:
         confidence = max(0, min(1, 1 - std / 60))  # Нормализуем
         
         # Определяем тренд
-        trend, _ = self.detect_trend(df, supplier, warehouse, weekday, hour)
+        pv_for_prediction = pv_normalized or latest.get('ПВ', self.default_pv_label)
+        trend, _ = self.detect_trend(df, supplier, warehouse, weekday, hour, pv=pv_for_prediction)
         
         # Генерируем рекомендацию
         shift_minutes = int(round(prediction))
@@ -354,6 +403,7 @@ class DeliveryMLPredictor:
         return DeliveryPrediction(
             supplier=supplier,
             warehouse=warehouse,
+            pv=pv_for_prediction,
             weekday=weekday_name,
             order_hour=hour,
             predicted_delivery_time=prediction,
@@ -364,7 +414,8 @@ class DeliveryMLPredictor:
         )
     
     def get_example_orders(self, df: pd.DataFrame, supplier: str, warehouse: str,
-                           weekday: int, hour: int, limit: int = 5) -> List[Dict]:
+                           weekday: int, hour: int, pv: Optional[str] = None,
+                           limit: int = 5) -> List[Dict]:
         """
         Получение примеров заказов для обоснования рекомендации.
         
@@ -375,6 +426,8 @@ class DeliveryMLPredictor:
             (df['Поставщик'] == supplier) &
             (df['Склад'] == warehouse)
         )
+        if pv is not None:
+            mask &= (df['ПВ'] == self._normalize_pv(pv))
         
         if 'day_of_week' in df.columns:
             mask &= (df['day_of_week'] == weekday)
@@ -394,6 +447,7 @@ class DeliveryMLPredictor:
             dev = row.get('Разница во времени привоза (мин.)', 0)
             examples.append({
                 'order_id': row.get('№ заказа', ''),
+                'pv': row.get('ПВ', self.default_pv_label),
                 'order_date': row['Время заказа позиции'].strftime('%d.%m.%Y') if pd.notna(row['Время заказа позиции']) else '',
                 'order_time': row['Время заказа позиции'].strftime('%H:%M') if pd.notna(row['Время заказа позиции']) else '',
                 'plan_time': row['Рассчетное время привоза'].strftime('%H:%M') if pd.notna(row.get('Рассчетное время привоза')) else '',
@@ -428,7 +482,8 @@ class DeliveryMLPredictor:
         
         # Подготовка данных
         df_prep = self.prepare_features(df.copy())
-        df_prep = self.add_rolling_features(df_prep, ['Поставщик', 'Склад', 'day_of_week', 'hour'])
+        df_prep = self._encode_pv(df_prep)
+        df_prep = self.add_rolling_features(df_prep, ['Поставщик', 'Склад', 'ПВ', 'day_of_week', 'hour'])
         
         recommendations = []
         
@@ -436,9 +491,9 @@ class DeliveryMLPredictor:
         df_prep = df_prep.dropna(subset=['Разница во времени привоза (мин.)', 'Поставщик', 'Склад'])
         
         # Группируем по поставщик-склад-день-час
-        grouped = df_prep.groupby(['Поставщик', 'Склад', 'day_of_week', 'hour'])
+        grouped = df_prep.groupby(['Поставщик', 'Склад', 'ПВ', 'day_of_week', 'hour'])
         
-        for (supplier, warehouse, weekday, hour), group in grouped:
+        for (supplier, warehouse, pv, weekday, hour), group in grouped:
             if len(group) < min_samples:
                 continue
             
@@ -469,13 +524,21 @@ class DeliveryMLPredictor:
                 continue
             
             # Определяем тренд
-            trend, slope = self.detect_trend(df_prep, supplier, warehouse, weekday, hour)
+            trend, slope = self.detect_trend(df_prep, supplier, warehouse, weekday, hour, pv=pv)
             
-            # Улучшенный расчет уверенности
+            # Улучшенный расчет уверенности с учетом ПВ
             std = recent['Разница во времени привоза (мин.)'].std()
             count_factor = min(1.0, len(recent) / 20)  # Больше данных = выше уверенность
             std_factor = max(0, min(1, 1 - std / 60))
-            confidence = 0.5 + 0.25 * count_factor + 0.25 * std_factor
+            
+            # Бонус за консистентность данных по этому ПВ
+            pv_consistency = 1.0
+            if len(group) >= 10:
+                # Проверяем, насколько стабильны данные по этому ПВ
+                pv_std = group['Разница во времени привоза (мин.)'].std()
+                pv_consistency = max(0.7, min(1.0, 1 - pv_std / 120))
+            
+            confidence = 0.4 + 0.2 * count_factor + 0.2 * std_factor + 0.2 * pv_consistency
             confidence = round(min(0.95, confidence), 2)
             
             # Формируем рекомендацию
@@ -489,11 +552,12 @@ class DeliveryMLPredictor:
                 reason = self._generate_reason(trend, shift_minutes, weekday_name, hour)
                 
                 # Получаем примеры заказов
-                examples = self.get_example_orders(df_prep, supplier, warehouse, weekday, hour, limit=5)
+                examples = self.get_example_orders(df_prep, supplier, warehouse, weekday, hour, pv=pv, limit=5)
                 
                 rec = ScheduleRecommendation(
                     supplier=supplier,
                     warehouse=warehouse,
+                    pv=pv,
                     weekday=weekday_name,
                     order_time_start=f"{hour:02d}:00",
                     order_time_end=f"{hour:02d}:59",
@@ -531,7 +595,8 @@ class DeliveryMLPredictor:
     
     def analyze_supplier_patterns(self, df: pd.DataFrame, 
                                   supplier: str, 
-                                  warehouse: str) -> Dict:
+                                  warehouse: str,
+                                  pv: Optional[str] = None) -> Dict:
         """
         Комплексный анализ паттернов поставщика.
         
@@ -542,7 +607,12 @@ class DeliveryMLPredictor:
         df = df.dropna(subset=['Время заказа позиции', 'Разница во времени привоза (мин.)'])
         df = self.prepare_features(df)
         
+        if 'ПВ' not in df.columns:
+            df['ПВ'] = self.default_pv_label
+        df['ПВ'] = df['ПВ'].apply(self._normalize_pv)
         mask = (df['Поставщик'] == supplier) & (df['Склад'] == warehouse)
+        if pv is not None:
+            mask &= (df['ПВ'] == self._normalize_pv(pv))
         subset = df[mask]
         
         if subset.empty:
@@ -551,6 +621,7 @@ class DeliveryMLPredictor:
         analysis = {
             'supplier': supplier,
             'warehouse': warehouse,
+            'pv': pv if pv else 'Все ПВ',
             'total_orders': len(subset),
             'date_range': {
                 'from': subset['Время заказа позиции'].min().strftime('%d.%m.%Y'),
@@ -564,8 +635,22 @@ class DeliveryMLPredictor:
             },
             'by_weekday': {},
             'by_hour': {},
+            'by_pv': {},  # Статистика по каждому ПВ
             'recommendations': []
         }
+        
+        # Анализ по ПВ (если не фильтруем по конкретному ПВ)
+        if pv is None:
+            for pv_name in subset['ПВ'].unique():
+                pv_data = subset[subset['ПВ'] == pv_name]
+                if len(pv_data) >= 3:
+                    analysis['by_pv'][pv_name] = {
+                        'orders': len(pv_data),
+                        'mean_deviation': round(pv_data['Разница во времени привоза (мин.)'].mean(), 1),
+                        'median_deviation': round(pv_data['Разница во времени привоза (мин.)'].median(), 1),
+                        'std_deviation': round(pv_data['Разница во времени привоза (мин.)'].std(), 1),
+                        'on_time_pct': round((pv_data['Разница во времени привоза (мин.)'].between(-30, 30).sum() / len(pv_data)) * 100, 1)
+                    }
         
         # Анализ по дням недели
         for weekday in range(7):
@@ -593,6 +678,68 @@ class DeliveryMLPredictor:
             }
         
         return analysis
+
+
+    def get_pv_statistics(self, df: pd.DataFrame, supplier: str, warehouse: str) -> Dict[str, Dict]:
+        """
+        Получение статистики по всем ПВ для поставщика-склада.
+        
+        Returns:
+            Словарь {pv_name: {stats}}
+        """
+        df = df.dropna(subset=['Время заказа позиции', 'Разница во времени привоза (мин.)'])
+        
+        if 'ПВ' not in df.columns:
+            df['ПВ'] = self.default_pv_label
+        df['ПВ'] = df['ПВ'].apply(self._normalize_pv)
+        
+        mask = (df['Поставщик'] == supplier) & (df['Склад'] == warehouse)
+        subset = df[mask]
+        
+        if subset.empty:
+            return {}
+        
+        result = {}
+        for pv_name in subset['ПВ'].unique():
+            pv_data = subset[subset['ПВ'] == pv_name]
+            if len(pv_data) < 3:
+                continue
+            
+            deviations = pv_data['Разница во времени привоза (мин.)']
+            result[pv_name] = {
+                'orders': len(pv_data),
+                'unique_orders': pv_data['№ заказа'].nunique() if '№ заказа' in pv_data.columns else len(pv_data),
+                'mean_deviation': round(deviations.mean(), 1),
+                'median_deviation': round(deviations.median(), 1),
+                'std_deviation': round(deviations.std(), 1),
+                'min_deviation': round(deviations.min(), 1),
+                'max_deviation': round(deviations.max(), 1),
+                'on_time_pct': round((deviations.between(-30, 30).sum() / len(pv_data)) * 100, 1),
+                'early_pct': round((deviations < -30).sum() / len(pv_data) * 100, 1),
+                'late_pct': round((deviations > 30).sum() / len(pv_data) * 100, 1),
+                'very_late_pct': round((deviations > 60).sum() / len(pv_data) * 100, 1)
+            }
+        
+        return result
+    
+    def get_best_worst_pv(self, df: pd.DataFrame, supplier: str, warehouse: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Определение лучшего и худшего ПВ по % вовремя.
+        
+        Returns:
+            (best_pv, worst_pv)
+        """
+        stats = self.get_pv_statistics(df, supplier, warehouse)
+        if not stats:
+            return None, None
+        
+        # Сортируем по % вовремя
+        sorted_pv = sorted(stats.items(), key=lambda x: x[1]['on_time_pct'], reverse=True)
+        
+        best_pv = sorted_pv[0][0] if sorted_pv else None
+        worst_pv = sorted_pv[-1][0] if len(sorted_pv) > 1 else None
+        
+        return best_pv, worst_pv
 
 
 class TrendDetector:

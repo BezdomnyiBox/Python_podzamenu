@@ -74,6 +74,25 @@ COLORS = {
     'card': '#ffffff'
 }
 
+DEFAULT_PV_LABEL = "ПВ не указан"
+
+
+def normalize_pv_value(value):
+    """Единый формат отображения ПВ"""
+    if value is None or pd.isna(value):
+        return DEFAULT_PV_LABEL
+    value_str = str(value).strip()
+    return value_str if value_str else DEFAULT_PV_LABEL
+
+
+def normalize_pv_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Гарантирует наличие и корректность столбца ПВ"""
+    if 'ПВ' not in df.columns:
+        df['ПВ'] = DEFAULT_PV_LABEL
+    else:
+        df['ПВ'] = df['ПВ'].apply(normalize_pv_value)
+    return df
+
 # ========================================
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ========================================
@@ -82,6 +101,7 @@ df_current = None
 ml_predictor = None
 recommendations = []
 is_model_trained = False
+current_pv_filter = None  # Текущий фильтр по ПВ
 
 # Переменные сортировки для таблиц
 sort_states = {}
@@ -165,6 +185,7 @@ def fetch_data():
                 df_current = df.copy()
                 is_model_trained = False
                 
+                root.after(0, update_pv_filter_options)
                 root.after(0, update_stats_display)
                 root.after(0, update_raw_data_display)
                 root.after(0, lambda: update_status(f"✅ Загружено {len(df):,} записей", "success"))
@@ -239,6 +260,7 @@ def fetch_data_chunked(start_date, end_date, chunk_days=14):
     df['Час_заказа'] = df['Время заказа позиции'].dt.floor('h').dt.strftime('%H:%M')
     
     df = df.drop_duplicates(subset=['№ заказа', 'Артикул', 'Время заказа позиции'])
+    df = normalize_pv_column(df)
     
     return df
 
@@ -271,6 +293,7 @@ def fetch_historical_data():
                 cache_path = os.path.join(os.path.dirname(__file__), 'ml_data_cache.pkl')
                 df.to_pickle(cache_path)
                 
+                root.after(0, update_pv_filter_options)
                 root.after(0, update_stats_display)
                 root.after(0, update_raw_data_display)
                 root.after(0, lambda: update_status(f"✅ Загружено {len(df):,} записей. Сохранено в кэш.", "success"))
@@ -306,6 +329,7 @@ def load_cached_data():
         progress_bar.start()
         
         df = pd.read_pickle(cache_path)
+        df = normalize_pv_column(df)
         df_original = df.copy()
         df_current = df.copy()
         is_model_trained = False
@@ -313,6 +337,7 @@ def load_cached_data():
         cache_date = datetime.fromtimestamp(os.path.getmtime(cache_path))
         
         progress_bar.stop()
+        update_pv_filter_options()
         update_stats_display()
         update_raw_data_display()
         update_status(f"✅ Загружено {len(df):,} записей из кэша ({cache_date.strftime('%d.%m.%Y')})", "success")
@@ -376,7 +401,7 @@ def update_stats_display():
     for item in tree_stats.get_children():
         tree_stats.delete(item)
     
-    stats = df_current.groupby(['Поставщик', 'Склад']).agg(
+    stats = df_current.groupby(['Поставщик', 'Склад', 'ПВ']).agg(
         Заказов=('№ заказа', 'nunique'),
         Среднее=('Разница во времени привоза (мин.)', 'mean'),
         Медиана=('Разница во времени привоза (мин.)', 'median'),
@@ -384,7 +409,11 @@ def update_stats_display():
     ).round(1).reset_index()
     
     for idx, row in stats.iterrows():
-        mask = (df_current['Поставщик'] == row['Поставщик']) & (df_current['Склад'] == row['Склад'])
+        mask = (
+            (df_current['Поставщик'] == row['Поставщик']) &
+            (df_current['Склад'] == row['Склад']) &
+            (df_current['ПВ'] == row['ПВ'])
+        )
         subset = df_current[mask]
         on_time = (subset['Разница во времени привоза (мин.)'].between(-30, 30).sum() / len(subset)) * 100
         stats.loc[idx, 'Вовремя'] = round(on_time, 1)
@@ -401,6 +430,7 @@ def update_stats_display():
         tree_stats.insert('', 'end', values=(
             row['Поставщик'],
             row['Склад'],
+            normalize_pv_value(row['ПВ']),
             f"{row['Заказов']:,}",
             f"{row['Среднее']:+.1f}",
             f"{row['Медиана']:+.1f}",
@@ -408,8 +438,10 @@ def update_stats_display():
             f"{row['Вовремя']:.1f}%"
         ), tags=tags)
     
-    # Обновляем счетчик
-    lbl_stats_count.config(text=f"Поставщиков: {len(stats)}")
+    # Обновляем счетчик с информацией о ПВ
+    unique_pv = df_current['ПВ'].nunique()
+    unique_suppliers = df_current['Поставщик'].nunique()
+    lbl_stats_count.config(text=f"Направлений: {len(stats)} | Поставщиков: {unique_suppliers} | ПВ: {unique_pv}")
 
 
 def update_recommendations_display():
@@ -443,6 +475,7 @@ def update_recommendations_display():
         tree_rec.insert('', 'end', values=(
             rec.supplier,
             rec.warehouse,
+            normalize_pv_value(rec.pv),
             rec.weekday[:2],
             f"{rec.order_time_start[:2]}:00",
             shift_str,
@@ -451,7 +484,9 @@ def update_recommendations_display():
             rec.effective_from
         ), tags=tags)
     
-    lbl_rec_count.config(text=f"Рекомендаций: {len(recommendations)}")
+    # Подсчитываем уникальные ПВ в рекомендациях
+    unique_pv_in_rec = len(set(r.pv for r in recommendations))
+    lbl_rec_count.config(text=f"Рекомендаций: {len(recommendations)} | ПВ: {unique_pv_in_rec}")
 
 
 def update_raw_data_display():
@@ -481,7 +516,7 @@ def update_raw_data_display():
         fact_time = row['Время поступления на склад'].strftime('%d.%m.%Y %H:%M') if pd.notna(row.get('Время поступления на склад')) else ''
         
         # Получаем дополнительные поля
-        pv = str(row.get('ПВ', ''))[:40] if pd.notna(row.get('ПВ')) else ''
+        pv = normalize_pv_value(row.get('ПВ'))[:40]
         brand = str(row.get('Бренд', ''))[:25] if pd.notna(row.get('Бренд')) else ''
         article = str(row.get('Артикул', ''))[:20] if pd.notna(row.get('Артикул')) else ''
         
@@ -526,8 +561,9 @@ def on_stats_double_click(event):
     values = tree_stats.item(selected[0])['values']
     supplier = values[0]
     warehouse = values[1]
+    pv = values[2] if len(values) > 2 else None
     
-    show_supplier_details(supplier, warehouse)
+    show_supplier_details(supplier, warehouse, pv)
 
 
 def on_rec_double_click(event):
@@ -539,16 +575,22 @@ def on_rec_double_click(event):
     values = tree_rec.item(selected[0])['values']
     supplier = values[0]
     warehouse = values[1]
-    weekday = values[2]
+    pv = values[2]
+    weekday = values[3]
     
     # Находим полную рекомендацию
     for rec in recommendations:
-        if rec.supplier == supplier and rec.warehouse == warehouse and rec.weekday.startswith(weekday):
+        if (
+            rec.supplier == supplier and
+            rec.warehouse == warehouse and
+            normalize_pv_value(rec.pv) == pv and
+            rec.weekday.startswith(weekday)
+        ):
             show_recommendation_details(rec)
             return
 
 
-def show_orders_for_day(supplier, warehouse, day, parent_df):
+def show_orders_for_day(supplier, warehouse, pv, day, parent_df):
     """Показать все заказы за конкретный день недели"""
     day_data = parent_df[parent_df['День_недели'] == day].copy()
     
@@ -557,7 +599,7 @@ def show_orders_for_day(supplier, warehouse, day, parent_df):
         return
     
     win = tk.Toplevel()
-    win.title(f"📋 Заказы: {supplier} — {warehouse} ({day})")
+    win.title(f"📋 Заказы: {supplier} — {warehouse} — {pv} ({day})")
     win.geometry("1300x600")
     win.configure(bg=COLORS['bg'])
     
@@ -566,6 +608,8 @@ def show_orders_for_day(supplier, warehouse, day, parent_df):
     header.pack(fill='x')
     tk.Label(header, text=f"📋 {day} | {supplier}", font=("Segoe UI", 14, "bold"),
             bg=COLORS['info'], fg='white').pack(pady=10)
+    tk.Label(header, text=f"Склад: {warehouse} | ПВ: {pv}", font=("Segoe UI", 10),
+            bg=COLORS['info'], fg='white').pack()
     tk.Label(header, text=f"Всего заказов: {len(day_data)}", font=("Segoe UI", 10),
             bg=COLORS['info'], fg='white').pack(pady=(0, 10))
     
@@ -631,7 +675,7 @@ def show_orders_for_day(supplier, warehouse, day, parent_df):
             font=("Segoe UI", 9), fg=COLORS['text_light'], bg=COLORS['bg']).pack(pady=5)
 
 
-def show_orders_for_hour(supplier, warehouse, hour, parent_df):
+def show_orders_for_hour(supplier, warehouse, pv, hour, parent_df):
     """Показать все заказы за конкретный час"""
     hour_data = parent_df[parent_df['Время заказа позиции'].dt.hour == hour].copy()
     
@@ -640,7 +684,7 @@ def show_orders_for_hour(supplier, warehouse, hour, parent_df):
         return
     
     win = tk.Toplevel()
-    win.title(f"📋 Заказы: {supplier} — {warehouse} ({hour:02d}:00)")
+    win.title(f"📋 Заказы: {supplier} — {warehouse} — {pv} ({hour:02d}:00)")
     win.geometry("1300x600")
     win.configure(bg=COLORS['bg'])
     
@@ -649,6 +693,8 @@ def show_orders_for_hour(supplier, warehouse, hour, parent_df):
     header.pack(fill='x')
     tk.Label(header, text=f"⏰ Час: {hour:02d}:00 | {supplier}", font=("Segoe UI", 14, "bold"),
             bg=COLORS['warning'], fg='white').pack(pady=10)
+    tk.Label(header, text=f"Склад: {warehouse} | ПВ: {pv}", font=("Segoe UI", 10),
+            bg=COLORS['warning'], fg='white').pack()
     tk.Label(header, text=f"Всего заказов: {len(hour_data)}", font=("Segoe UI", 10),
             bg=COLORS['warning'], fg='white').pack(pady=(0, 10))
     
@@ -714,12 +760,15 @@ def show_orders_for_hour(supplier, warehouse, hour, parent_df):
             font=("Segoe UI", 9), fg=COLORS['text_light'], bg=COLORS['bg']).pack(pady=5)
 
 
-def show_supplier_details(supplier, warehouse):
+def show_supplier_details(supplier, warehouse, pv=None):
     """Окно с детальным анализом поставщика"""
     if df_current is None:
         return
     
+    pv_label = normalize_pv_value(pv) if pv is not None else "Все ПВ"
     mask = (df_current['Поставщик'] == supplier) & (df_current['Склад'] == warehouse)
+    if pv is not None:
+        mask &= (df_current['ПВ'] == pv_label)
     subset = df_current[mask].copy()
     
     if subset.empty:
@@ -728,7 +777,7 @@ def show_supplier_details(supplier, warehouse):
     
     # Создаем окно
     win = tk.Toplevel(root)
-    win.title(f"📊 {supplier} — {warehouse}")
+    win.title(f"📊 {supplier} — {warehouse} | {pv_label}")
     win.geometry("1200x800")
     win.configure(bg=COLORS['bg'])
     
@@ -746,7 +795,7 @@ def show_supplier_details(supplier, warehouse):
     
     tk.Label(
         header,
-        text=f"Склад: {warehouse} | Заказов: {len(subset):,}",
+        text=f"Склад: {warehouse} | ПВ: {pv_label} | Заказов: {len(subset):,}",
         font=("Segoe UI", 11),
         bg=COLORS['header'],
         fg='#b0bec5'
@@ -774,7 +823,7 @@ def show_supplier_details(supplier, warehouse):
         cursor='hand2'
     ).pack(side='right', padx=5)
     
-    create_supplier_charts(frame_charts, subset, supplier)
+    create_supplier_charts(frame_charts, subset, supplier, pv_label)
     
     # === Вкладка 2: По дням недели ===
     frame_weekday = ttk.Frame(notebook)
@@ -816,7 +865,69 @@ def show_supplier_details(supplier, warehouse):
     table_frame_wd.grid_rowconfigure(0, weight=1)
     table_frame_wd.grid_columnconfigure(0, weight=1)
     
-    # === Вкладка 3: По часам ===
+    # === Вкладка 3: По ПВ ===
+    frame_pv = ttk.Frame(notebook)
+    notebook.add(frame_pv, text="🏬 По ПВ")
+    
+    # Frame для таблицы с прокруткой
+    table_frame_pv = tk.Frame(frame_pv, bg=COLORS['bg'])
+    table_frame_pv.pack(fill='both', expand=True, padx=10, pady=10)
+    
+    cols_pv = ('ПВ', 'Заказов', 'Среднее откл.', 'Медиана', 'Ст. откл.', '% вовремя')
+    tree_pv = SortableTreeview(table_frame_pv, columns=cols_pv, show='headings', height=12)
+    for col in cols_pv:
+        tree_pv.column(col, width=120 if col == 'ПВ' else 100)
+    tree_pv.column('ПВ', width=250)
+    
+    # Статистика по ПВ
+    pv_stats = subset.groupby('ПВ').agg(
+        Заказов=('№ заказа', 'nunique'),
+        Среднее=('Разница во времени привоза (мин.)', 'mean'),
+        Медиана=('Разница во времени привоза (мин.)', 'median'),
+        СтдОткл=('Разница во времени привоза (мин.)', 'std')
+    ).round(1).reset_index()
+    
+    for _, row in pv_stats.iterrows():
+        pv_data = subset[subset['ПВ'] == row['ПВ']]
+        on_time_pct = (pv_data['Разница во времени привоза (мин.)'].between(-30, 30).sum() / len(pv_data)) * 100
+        
+        tags = ()
+        if on_time_pct >= 80:
+            tags = ('good',)
+        elif on_time_pct >= 60:
+            tags = ('medium',)
+        else:
+            tags = ('bad',)
+        
+        tree_pv.insert('', 'end', values=(
+            normalize_pv_value(row['ПВ']),
+            row['Заказов'],
+            f"{row['Среднее']:+.1f}",
+            f"{row['Медиана']:+.1f}",
+            f"{row['СтдОткл']:.1f}",
+            f"{on_time_pct:.1f}%"
+        ), tags=tags)
+    
+    tree_pv.tag_configure('good', foreground=COLORS['success'])
+    tree_pv.tag_configure('medium', foreground=COLORS['warning'])
+    tree_pv.tag_configure('bad', foreground=COLORS['danger'])
+    
+    # Прокрутка для таблицы tree_pv
+    scrollbar_pv_v = ttk.Scrollbar(table_frame_pv, orient='vertical', command=tree_pv.yview)
+    scrollbar_pv_h = ttk.Scrollbar(table_frame_pv, orient='horizontal', command=tree_pv.xview)
+    tree_pv.configure(yscrollcommand=scrollbar_pv_v.set, xscrollcommand=scrollbar_pv_h.set)
+    
+    # Размещение через grid
+    tree_pv.grid(row=0, column=0, sticky='nsew')
+    scrollbar_pv_v.grid(row=0, column=1, sticky='ns')
+    scrollbar_pv_h.grid(row=1, column=0, sticky='ew')
+    table_frame_pv.grid_rowconfigure(0, weight=1)
+    table_frame_pv.grid_columnconfigure(0, weight=1)
+    
+    tk.Label(frame_pv, text="💡 Статистика по каждому пункту выдачи (ПВ)", 
+            font=("Segoe UI", 9), fg=COLORS['text_light']).pack(pady=5)
+    
+    # === Вкладка 4: По часам ===
     frame_hour = ttk.Frame(notebook)
     notebook.add(frame_hour, text="⏰ По часам")
     
@@ -862,7 +973,7 @@ def show_supplier_details(supplier, warehouse):
         if not selected:
             return
         day = tree_wd.item(selected[0])['values'][0]
-        show_orders_for_day(supplier, warehouse, day, subset)
+        show_orders_for_day(supplier, warehouse, pv_label, day, subset)
     
     def on_hour_double_click(event):
         selected = tree_hr.selection()
@@ -870,7 +981,7 @@ def show_supplier_details(supplier, warehouse):
             return
         hour_str = tree_hr.item(selected[0])['values'][0]
         hour = int(hour_str.split(':')[0])
-        show_orders_for_hour(supplier, warehouse, hour, subset)
+        show_orders_for_hour(supplier, warehouse, pv_label, hour, subset)
     
     tree_wd.bind('<Double-1>', on_weekday_double_click)
     tree_hr.bind('<Double-1>', on_hour_double_click)
@@ -974,7 +1085,7 @@ def show_charts_guide():
             font=("Segoe UI", 9), fg=COLORS['text_light'], bg=COLORS['bg']).pack(pady=5)
 
 
-def create_supplier_charts(parent, df, supplier):
+def create_supplier_charts(parent, df, supplier, pv_label=None):
     """Создание улучшенных графиков для поставщика с пояснениями"""
     fig = Figure(figsize=(14, 10), dpi=100, facecolor=COLORS['bg'])
     
@@ -1162,7 +1273,8 @@ def create_supplier_charts(parent, df, supplier):
 def show_recommendation_details(rec):
     """Детали рекомендации с примерами заказов"""
     win = tk.Toplevel(root)
-    win.title(f"💡 Рекомендация: {rec.supplier}")
+    pv_label = normalize_pv_value(getattr(rec, 'pv', None))
+    win.title(f"💡 Рекомендация: {rec.supplier} — {pv_label}")
     win.geometry("800x750")
     win.configure(bg=COLORS['bg'])
     
@@ -1185,6 +1297,7 @@ def show_recommendation_details(rec):
     params = [
         ("🏭 Поставщик:", rec.supplier),
         ("📦 Склад:", rec.warehouse),
+        ("🏬 ПВ:", pv_label),
         ("📅 День недели:", rec.weekday),
         ("⏰ Интервал заказов:", f"{rec.order_time_start} — {rec.order_time_end}"),
         ("", ""),
@@ -1229,10 +1342,11 @@ def show_recommendation_details(rec):
         table_frame_examples.pack(fill='both', expand=True, padx=10, pady=10)
         
         # Таблица примеров
-        cols = ('№ заказа', 'Дата', 'Время заказа', 'План', 'Факт', 'Откл.')
+        cols = ('№ заказа', 'ПВ', 'Дата', 'Время заказа', 'План', 'Факт', 'Откл.')
         tree_examples = ttk.Treeview(table_frame_examples, columns=cols, show='headings', height=5)
         
         tree_examples.column('№ заказа', width=100)
+        tree_examples.column('ПВ', width=160)
         tree_examples.column('Дата', width=100)
         tree_examples.column('Время заказа', width=100)
         tree_examples.column('План', width=80)
@@ -1254,6 +1368,7 @@ def show_recommendation_details(rec):
             
             tree_examples.insert('', 'end', values=(
                 ex.get('order_id', ''),
+                normalize_pv_value(ex.get('pv')),
                 ex.get('order_date', ''),
                 ex.get('order_time', ''),
                 ex.get('plan_time', ''),
@@ -1302,7 +1417,7 @@ def show_recommendation_details(rec):
     tk.Button(
         btn_frame,
         text="📊 Анализ поставщика",
-        command=lambda: show_supplier_details(rec.supplier, rec.warehouse),
+        command=lambda: show_supplier_details(rec.supplier, rec.warehouse, rec.pv),
         font=("Segoe UI", 10),
         bg=COLORS['info'],
         fg='white',
@@ -1329,9 +1444,18 @@ def export_single_rec(rec):
     )
     if filepath:
         data = {
-            'Параметр': ['Поставщик', 'Склад', 'День', 'Интервал', 'Сдвиг', 'Уверенность', 'Тренд', 'Причина'],
-            'Значение': [rec.supplier, rec.warehouse, rec.weekday, f"{rec.order_time_start}-{rec.order_time_end}",
-                        f"{rec.shift_minutes:+d} мин", f"{rec.confidence*100:.0f}%", rec.trend_detected, rec.reason]
+            'Параметр': ['Поставщик', 'Склад', 'ПВ', 'День', 'Интервал', 'Сдвиг', 'Уверенность', 'Тренд', 'Причина'],
+            'Значение': [
+                rec.supplier,
+                rec.warehouse,
+                normalize_pv_value(getattr(rec, 'pv', None)),
+                rec.weekday,
+                f"{rec.order_time_start}-{rec.order_time_end}",
+                f"{rec.shift_minutes:+d} мин",
+                f"{rec.confidence*100:.0f}%",
+                rec.trend_detected,
+                rec.reason
+            ]
         }
         pd.DataFrame(data).to_excel(filepath, index=False)
         messagebox.showinfo("✅ Готово", f"Сохранено: {Path(filepath).name}")
@@ -1355,6 +1479,7 @@ def export_all_recommendations():
     data = [{
         'Поставщик': r.supplier,
         'Склад': r.warehouse,
+        'ПВ': normalize_pv_value(r.pv),
         'День': r.weekday,
         'Час заказа': r.order_time_start,
         'Сдвиг (мин)': r.shift_minutes,
@@ -1635,6 +1760,41 @@ tk.Button(btn_load_frame, text="📚 История", command=fetch_historical_d
 tk.Button(btn_load_frame, text="💾 Кэш", command=load_cached_data, bg=COLORS['success'], fg='white',
           font=("Segoe UI", 9), width=8).pack(side='left', padx=3, pady=5)
 
+# Фильтр по ПВ
+pv_filter_frame = tk.LabelFrame(control_frame, text="🏬 Фильтр ПВ", font=("Segoe UI", 9), bg=COLORS['bg'])
+pv_filter_frame.pack(side='left', padx=10)
+
+pv_filter_var = tk.StringVar(value="Все ПВ")
+pv_filter_combo = ttk.Combobox(pv_filter_frame, textvariable=pv_filter_var, width=20, state='readonly')
+pv_filter_combo['values'] = ["Все ПВ"]
+pv_filter_combo.pack(side='left', padx=3, pady=5)
+
+def apply_pv_filter(event=None):
+    """Применить фильтр по ПВ"""
+    global df_current, current_pv_filter
+    if df_original is None:
+        return
+    
+    selected = pv_filter_var.get()
+    if selected == "Все ПВ":
+        df_current = df_original.copy()
+        current_pv_filter = None
+    else:
+        df_current = df_original[df_original['ПВ'] == selected].copy()
+        current_pv_filter = selected
+    
+    update_stats_display()
+    update_raw_data_display()
+    update_status(f"🏬 Фильтр: {selected} | Записей: {len(df_current):,}", "info")
+
+pv_filter_combo.bind('<<ComboboxSelected>>', apply_pv_filter)
+
+def update_pv_filter_options():
+    """Обновить список ПВ в фильтре"""
+    if df_original is not None:
+        pv_list = ["Все ПВ"] + sorted(df_original['ПВ'].dropna().unique().tolist())
+        pv_filter_combo['values'] = pv_list
+
 # Кнопки анализа
 btn_analysis_frame = tk.LabelFrame(control_frame, text="🔍 Анализ", font=("Segoe UI", 9), bg=COLORS['bg'])
 btn_analysis_frame.pack(side='left', padx=10)
@@ -1678,10 +1838,11 @@ lbl_stats_count.pack(side='right')
 table_frame_stats = tk.Frame(frame_stats, bg=COLORS['bg'])
 table_frame_stats.pack(fill='both', expand=True, padx=10, pady=5)
 
-cols_stats = ('Поставщик', 'Склад', 'Заказов', 'Ср. откл.', 'Медиана', 'Ст. откл.', '% вовремя')
+cols_stats = ('Поставщик', 'Склад', 'ПВ', 'Заказов', 'Ср. откл.', 'Медиана', 'Ст. откл.', '% вовремя')
 tree_stats = SortableTreeview(table_frame_stats, columns=cols_stats, show='headings', height=22)
 tree_stats.column('Поставщик', width=200)
 tree_stats.column('Склад', width=180)
+tree_stats.column('ПВ', width=200)
 tree_stats.column('Заказов', width=80)
 tree_stats.column('Ср. откл.', width=80)
 tree_stats.column('Медиана', width=80)
@@ -1727,10 +1888,11 @@ lbl_rec_count.pack(side='right')
 table_frame_rec = tk.Frame(frame_rec, bg=COLORS['bg'])
 table_frame_rec.pack(fill='both', expand=True, padx=10, pady=5)
 
-cols_rec = ('Поставщик', 'Склад', 'День', 'Час', 'Сдвиг', 'Уверенность', 'Тренд', 'Применить с')
+cols_rec = ('Поставщик', 'Склад', 'ПВ', 'День', 'Час', 'Сдвиг', 'Уверенность', 'Тренд', 'Применить с')
 tree_rec = SortableTreeview(table_frame_rec, columns=cols_rec, show='headings', height=20)
 tree_rec.column('Поставщик', width=180)
 tree_rec.column('Склад', width=150)
+tree_rec.column('ПВ', width=200)
 tree_rec.column('День', width=50)
 tree_rec.column('Час', width=60)
 tree_rec.column('Сдвиг', width=80)
