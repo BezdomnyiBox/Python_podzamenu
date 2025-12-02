@@ -1,0 +1,52 @@
+name: Build Windows EXE
+
+on:
+  # Запуск вручную из GitHub
+  workflow_dispatch:
+  
+  # Или при пуше тега версии
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Build EXE
+        working-directory: delivery_analytics
+        run: |
+          python -m PyInstaller ML_Delivery_Analytics.spec --clean
+      
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ML_Delivery_Analytics_Windows
+          path: delivery_analytics/dist/ML_Delivery_Analytics.exe
+          retention-days: 30
+      
+      - name: Create Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: delivery_analytics/dist/ML_Delivery_Analytics.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
