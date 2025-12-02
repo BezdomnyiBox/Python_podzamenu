@@ -121,6 +121,179 @@ def open_order_in_crm(order_id):
 
 
 # ========================================
+# TOOLTIP (ПОДСКАЗКИ)
+# ========================================
+class Tooltip:
+    """Класс для создания подсказок при наведении мыши"""
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        self.widget.bind('<Enter>', self.on_enter)
+        self.widget.bind('<Leave>', self.on_leave)
+        self.widget.bind('<Motion>', self.on_motion)
+    
+    def on_enter(self, event=None):
+        self.show_tooltip()
+    
+    def on_leave(self, event=None):
+        self.hide_tooltip()
+    
+    def on_motion(self, event=None):
+        if self.tooltip_window:
+            self.hide_tooltip()
+            self.show_tooltip()
+    
+    def show_tooltip(self):
+        x, y, _, _ = self.widget.bbox('insert') if hasattr(self.widget, 'bbox') else (0, 0, 0, 0)
+        x += self.widget.winfo_rootx() + 25
+        y += self.widget.winfo_rooty() + 20
+        
+        self.tooltip_window = tk.Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.wm_geometry(f"+{x}+{y}")
+        
+        label = tk.Label(
+            self.tooltip_window,
+            text=self.text,
+            background="#ffffe0",
+            relief='solid',
+            borderwidth=1,
+            font=("Segoe UI", 9),
+            justify='left',
+            wraplength=300
+        )
+        label.pack()
+    
+    def hide_tooltip(self):
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+
+
+def add_tooltips_to_treeview(tree, columns):
+    """Добавить подсказки ко всем заголовкам столбцов таблицы"""
+    tooltip_window = None
+    HEADER_HEIGHT = 30  # Высота области заголовка в пикселях
+    
+    def show_tooltip(event):
+        nonlocal tooltip_window
+        
+        # Проверяем, что мышь находится в области заголовка (верхние 30 пикселей)
+        if event.y > HEADER_HEIGHT:
+            # Мышь не в области заголовка - закрываем tooltip если открыт
+            if tooltip_window:
+                tooltip_window.destroy()
+                tooltip_window = None
+            return
+        
+        # Определяем, на какой столбец наведена мышь
+        x = event.x
+        column_id = tree.identify_column(x)
+        
+        if column_id:
+            # column_id имеет формат "#0", "#1", "#2" и т.д.
+            # "#0" - это tree column, остальные - наши столбцы
+            try:
+                col_index = int(column_id.replace('#', ''))
+                if col_index == 0:
+                    return  # Пропускаем tree column
+                
+                # Получаем список столбцов (без tree column)
+                all_columns = tree['columns']
+                if col_index <= len(all_columns):
+                    column_name = all_columns[col_index - 1]
+                    tooltip_text = COLUMN_TOOLTIPS.get(column_name, '')
+                    
+                    if tooltip_text:
+                        # Закрываем предыдущий tooltip
+                        if tooltip_window:
+                            tooltip_window.destroy()
+                        
+                        # Создаём новый tooltip
+                        tooltip_window = tk.Toplevel()
+                        tooltip_window.wm_overrideredirect(True)
+                        tooltip_window.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+                        
+                        label = tk.Label(
+                            tooltip_window,
+                            text=tooltip_text,
+                            background="#ffffe0",
+                            relief='solid',
+                            borderwidth=1,
+                            font=("Segoe UI", 9),
+                            justify='left',
+                            wraplength=300,
+                            padx=8,
+                            pady=5
+                        )
+                        label.pack()
+            except (ValueError, IndexError):
+                pass
+    
+    def hide_tooltip(event):
+        nonlocal tooltip_window
+        if tooltip_window:
+            tooltip_window.destroy()
+            tooltip_window = None
+    
+    # Привязываем события
+    tree.bind('<Motion>', show_tooltip)
+    tree.bind('<Leave>', hide_tooltip)
+
+
+# Словарь подсказок для столбцов
+COLUMN_TOOLTIPS = {
+    # Статистика поставщиков
+    'Поставщик': 'Название поставщика',
+    'Склад': 'Название склада',
+    'ПВ': 'Пункт выдачи (пункт привоза)',
+    'Заказов': 'Общее количество заказов',
+    'Ср. откл.': 'Среднее отклонение (мин)\n\nПоказывает среднее арифметическое всех отклонений.\nПоложительное = опоздание, отрицательное = ранний привоз.',
+    'Медиана': 'Медианное отклонение (мин)\n\nЗначение, которое делит все отклонения пополам.\n50% заказов имеют отклонение меньше медианы, 50% - больше.\nМенее чувствительна к выбросам, чем среднее.',
+    'Ст. откл.': 'Стандартное отклонение (мин)\n\nПоказывает разброс данных вокруг среднего.\nМаленькое значение = стабильный поставщик\nБольшое значение = непредсказуемый поставщик',
+    '% вовремя': 'Процент заказов, привезённых вовремя (±30 минут от графика)',
+    
+    # Рекомендации
+    'День': 'День недели',
+    'Час': 'Час заказа',
+    'Сдвиг': 'Рекомендуемый сдвиг времени привоза (в минутах)',
+    'Уверенность': 'Уверенность модели в рекомендации (0-100%)\n\nЗависит от:\n- Количества данных\n- Стабильности отклонений\n- Консистентности данных по ПВ',
+    'Тренд': 'Обнаруженный тренд:\n✓ Стабильно - без изменений\n⬆ Опоздания - увеличиваются\n⬇ Ранние - привозят раньше\n⚡ Сдвиг - резкое изменение',
+    'Применить с': 'Рекомендуемая дата начала применения',
+    
+    # По дням недели
+    'День недели': 'День недели',
+    'Уник. заказов': 'Количество уникальных номеров заказов',
+    '% ранних': 'Процент заказов, привезённых раньше графика (>30 мин)',
+    '% поздних': 'Процент заказов, привезённых позже графика (>30 мин)',
+    'Худший час': 'Час с максимальным средним опозданием\n\nФормат: ЧЧ:ММ (среднее отклонение)',
+    
+    # Сырые данные
+    '№ заказа': 'Номер заказа в CRM',
+    'Бренд': 'Бренд товара',
+    'Артикул': 'Артикул товара',
+    'Дата заказа': 'Дата и время создания заказа',
+    'План привоза': 'Плановое время привоза на склад',
+    'Факт привоза': 'Фактическое время поступления на склад',
+    'Откл. (мин)': 'Отклонение фактического времени от планового (в минутах)\n\nПоложительное = опоздание\nОтрицательное = ранний привоз',
+    
+    # Детальные окна
+    'Час': 'Час заказа',
+    'План': 'Плановое время привоза',
+    'Факт': 'Фактическое время привоза',
+    'Откл.': 'Отклонение (в минутах)',
+    'Время заказа': 'Время создания заказа',
+    'Среднее откл.': 'Среднее отклонение (мин)',
+    'Ст. откл.': 'Стандартное отклонение (мин)',
+    'День': 'День недели',
+    'Заказов': 'Количество заказов',
+    'Дата': 'Дата заказа',
+    'Дата заказа': 'Дата и время создания заказа'
+}
+
+
+# ========================================
 # СОРТИРУЕМАЯ ТАБЛИЦА
 # ========================================
 class SortableTreeview(ttk.Treeview):
@@ -628,6 +801,7 @@ def show_orders_for_day(supplier, warehouse, pv, day, parent_df):
     tree.column('План привоза', width=180)
     tree.column('Факт привоза', width=180)
     tree.column('Откл. (мин)', width=100)
+    add_tooltips_to_treeview(tree, cols)
     
     for _, row in day_data.iterrows():
         dev = row['Разница во времени привоза (мин.)']
@@ -713,6 +887,7 @@ def show_orders_for_hour(supplier, warehouse, pv, hour, parent_df):
     tree.column('План привоза', width=180)
     tree.column('Факт привоза', width=180)
     tree.column('Откл. (мин)', width=100)
+    add_tooltips_to_treeview(tree, cols)
     
     for _, row in hour_data.iterrows():
         dev = row['Разница во времени привоза (мин.)']
@@ -840,6 +1015,7 @@ def show_supplier_details(supplier, warehouse, pv=None):
     tree_wd = SortableTreeview(table_frame_wd, columns=cols_wd, show='headings', height=12)
     for col in cols_wd:
         tree_wd.column(col, width=100)
+    add_tooltips_to_treeview(tree_wd, cols_wd)
     
     for day_idx, day in enumerate(DAYS_RU):
         day_data = subset[subset['День_недели'] == day]
@@ -881,6 +1057,7 @@ def show_supplier_details(supplier, warehouse, pv=None):
     for col in cols_pv:
         tree_pv.column(col, width=120 if col == 'ПВ' else 100)
     tree_pv.column('ПВ', width=250)
+    add_tooltips_to_treeview(tree_pv, cols_pv)
     
     # Статистика по ПВ
     pv_stats = subset.groupby('ПВ').agg(
@@ -942,6 +1119,7 @@ def show_supplier_details(supplier, warehouse, pv=None):
     tree_hr = SortableTreeview(table_frame_hr, columns=cols_hr, show='headings', height=15)
     for col in cols_hr:
         tree_hr.column(col, width=100)
+    add_tooltips_to_treeview(tree_hr, cols_hr)
     
     subset['Час'] = subset['Время заказа позиции'].dt.hour
     for hour in range(6, 22):
@@ -1358,6 +1536,8 @@ def show_recommendation_details(rec):
         
         for col in cols:
             tree_examples.heading(col, text=col)
+        
+        add_tooltips_to_treeview(tree_examples, cols)
         
         for ex in rec.example_orders:
             dev = ex.get('deviation', 0)
@@ -1858,6 +2038,7 @@ tree_stats.tag_configure('medium', foreground=COLORS['warning'])
 tree_stats.tag_configure('bad', foreground=COLORS['danger'])
 
 tree_stats.bind('<Double-1>', on_stats_double_click)
+add_tooltips_to_treeview(tree_stats, cols_stats)
 
 # Прокрутка для таблицы tree_stats
 scrollbar_stats_v = ttk.Scrollbar(table_frame_stats, orient='vertical', command=tree_stats.yview)
@@ -1909,6 +2090,7 @@ tree_rec.tag_configure('med', background='#fff9c4')
 tree_rec.tag_configure('low', background='#ffecb3')
 
 tree_rec.bind('<Double-1>', on_rec_double_click)
+add_tooltips_to_treeview(tree_rec, cols_rec)
 
 # Прокрутка для таблицы tree_rec
 scrollbar_rec_v = ttk.Scrollbar(table_frame_rec, orient='vertical', command=tree_rec.yview)
@@ -1959,6 +2141,8 @@ tree_weekday.column('Худший час', width=100)
 tree_weekday.tag_configure('good', foreground=COLORS['success'])
 tree_weekday.tag_configure('medium', foreground=COLORS['warning'])
 tree_weekday.tag_configure('bad', foreground=COLORS['danger'])
+
+add_tooltips_to_treeview(tree_weekday, cols_weekday)
 
 # Прокрутка для таблицы tree_weekday
 scrollbar_weekday_v = ttk.Scrollbar(table_frame_weekday, orient='vertical', command=tree_weekday.yview)
@@ -2102,6 +2286,7 @@ def on_raw_double_click(event):
         open_order_in_crm(order_id)
 
 tree_raw.bind('<Double-1>', on_raw_double_click)
+add_tooltips_to_treeview(tree_raw, cols_raw)
 
 # Вертикальная и горизонтальная прокрутка
 scrollbar_raw_v = ttk.Scrollbar(tree_frame_raw, orient='vertical', command=tree_raw.yview)
