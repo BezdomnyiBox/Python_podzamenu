@@ -207,10 +207,10 @@ def get_schedules_for_warehouse_pv(warehouse, pv):
     
     matching = []
     for schedule in schedules_cache:
-        sched_warehouse = (schedule.get('warehouse') or '').lower().strip()
-        sched_branch = (schedule.get('branch') or '').lower().strip()
+        sched_warehouse = (schedule.get('warehouseName') or '').lower().strip()
+        sched_branch = (schedule.get('branchAddress') or '').lower().strip()
         
-        # Проверяем совпадение (warehouse = склад поставщика, branch = адрес ПВ)
+        # Проверяем совпадение (warehouseName = склад поставщика, branchAddress = адрес ПВ)
         # Сравниваем частичное совпадение, так как названия могут немного отличаться
         warehouse_match = (sched_warehouse in warehouse_lower or warehouse_lower in sched_warehouse or 
                           any(word in warehouse_lower for word in sched_warehouse.split() if len(word) > 3))
@@ -338,7 +338,7 @@ def generate_schedule_recommendations(df, schedules_data):
     # Индексируем расписание по складу для быстрого поиска
     schedule_by_warehouse = {}
     for sched in schedules_data:
-        warehouse = sched.get('warehouse', '').lower().strip()
+        warehouse = sched.get('warehouseName', '').lower().strip()
         if warehouse:
             # Берём первое слово склада для сопоставления
             key = warehouse.split()[0] if warehouse else ''
@@ -350,8 +350,8 @@ def generate_schedule_recommendations(df, schedules_data):
     processed_keys = set()  # Избегаем дубликатов
     
     for sched in schedules_data:
-        warehouse_sched = sched.get('warehouse', '')
-        branch = sched.get('branch', '')  # ПВ из расписания
+        warehouse_sched = sched.get('warehouseName', '')
+        branch = sched.get('branchAddress', '')  # ПВ из расписания
         weekday_num = sched.get('weekday')
         time_order = sched.get('timeOrder', '')
         current_duration = sched.get('deliveryDuration', 0)
@@ -377,7 +377,7 @@ def generate_schedule_recommendations(df, schedules_data):
         
         # Ищем предыдущее окно того же дня и склада
         same_day_windows = [s for s in schedules_data 
-                          if s.get('weekday') == weekday_num and s.get('warehouse') == warehouse_sched]
+                          if s.get('weekday') == weekday_num and s.get('warehouseName') == warehouse_sched]
         
         # Сортируем окна по времени
         def get_minutes(s):
@@ -1820,8 +1820,8 @@ def show_supplier_details(supplier, warehouse, pv=None):
         
         # Находим расписание для этого ПВ
         pv_schedules = [s for s in schedules_for_supplier 
-                       if pv_name.lower() in s.get('branch', '').lower() or 
-                          s.get('branch', '').lower() in pv_name.lower()]
+                       if pv_name.lower() in s.get('branchAddress', '').lower() or 
+                          s.get('branchAddress', '').lower() in pv_name.lower()]
         
         # Ячейки по дням
         for col, (day_num, day_name) in enumerate(zip(range(7), DAYS_RU), 1):
@@ -3118,7 +3118,7 @@ def show_all_schedules():
             font=("Segoe UI", 16, "bold"), bg=COLORS['header'], fg='white').pack(pady=10)
     
     # Собираем уникальные ПВ
-    pv_list = sorted(set(s.get('branch', '') for s in schedules_cache if s.get('branch')))
+    pv_list = sorted(set(s.get('branchAddress', '') for s in schedules_cache if s.get('branchAddress')))
     
     tk.Label(header, text=f"Всего ПВ: {len(pv_list)} | Окон: {len(schedules_cache)}", 
             font=("Segoe UI", 9), bg=COLORS['header'], fg='#90a4ae').pack(pady=(0, 10))
@@ -3197,7 +3197,7 @@ def show_all_schedules():
             return
         
         # Фильтруем расписание для выбранного ПВ
-        pv_schedules = [s for s in schedules_cache if s.get('branch') == selected_pv]
+        pv_schedules = [s for s in schedules_cache if s.get('branchAddress') == selected_pv]
         
         if not pv_schedules:
             tk.Label(table_frame, text="Нет расписания для выбранного ПВ", 
@@ -3207,7 +3207,7 @@ def show_all_schedules():
         # Группируем по складу
         warehouses = {}
         for sched in pv_schedules:
-            warehouse = sched.get('warehouse', 'Неизвестный склад')
+            warehouse = sched.get('warehouseName', 'Неизвестный склад')
             if warehouse not in warehouses:
                 warehouses[warehouse] = {i: [] for i in range(1, 8)}  # 1=Пн ... 7=Вс
             
@@ -3618,7 +3618,8 @@ def update_weekday_stats_display():
     rec_dict = {}
     if schedule_recommendations:
         for rec in schedule_recommendations:
-            key = (rec.supplier, rec.warehouse, rec.pv, rec.weekday_num, rec.time_order)
+            # Рекомендации - это словари, не объекты
+            key = (rec['supplier'], rec['warehouse'], rec['pv'], rec['weekday_num'], rec['time_order'])
             rec_dict[key] = rec
     
     # Заголовок таблицы
@@ -3710,9 +3711,9 @@ def update_weekday_stats_display():
                     
                     if rec:
                         needs_correction = True
-                        shift = rec.shift
-                        median_dev = rec.median_deviation
-                        on_time_pct = rec.on_time_percent
+                        shift = rec['shift_minutes']
+                        median_dev = rec['median_deviation']
+                        on_time_pct = rec['on_time_pct']
                         problems_count += 1
                     elif orders_count > 0:
                         deviations = window_data['Разница во времени привоза (мин.)'].dropna()
