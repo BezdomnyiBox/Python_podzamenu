@@ -48,3 +48,5 @@ historical_data_cache.pkl
 # Executables
 *.exe
 *.app
+# Allow spec files for PyInstaller build
+!delivery_analytics/ML_Delivery_Analytics.spec

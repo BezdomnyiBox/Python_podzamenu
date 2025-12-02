@@ -31,8 +31,10 @@ jobs:
       
       - name: Build EXE
         working-directory: delivery_analytics
+        shell: cmd
         run: |
-          python -m PyInstaller ML_Delivery_Analytics.spec --clean
+          dir
+          python -m PyInstaller "ML_Delivery_Analytics.spec" --clean --noconfirm
       
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
