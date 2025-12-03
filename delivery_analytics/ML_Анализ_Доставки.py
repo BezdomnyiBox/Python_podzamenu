@@ -55,6 +55,88 @@ plt.rcParams['axes.unicode_minus'] = False
 from ml_predictor import DeliveryMLPredictor, ScheduleRecommendation, TrendType
 
 # ========================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ КОПИРУЕМЫХ ТЕКСТОВ
+# ========================================
+def enable_treeview_copy(tree):
+    """Включить копирование для Treeview (Ctrl+C)"""
+    def copy_selection(event):
+        selection = tree.selection()
+        if not selection:
+            return
+        items = []
+        for item_id in selection:
+            item = tree.item(item_id)
+            values = item.get('values', [])
+            if values:
+                items.append('\t'.join(str(v) for v in values))
+        if items:
+            # Получаем корневое окно для доступа к clipboard
+            root_window = tree.winfo_toplevel()
+            root_window.clipboard_clear()
+            root_window.clipboard_append('\n'.join(items))
+    
+    tree.bind('<Control-c>', copy_selection)
+    tree.bind('<Control-C>', copy_selection)
+def create_copyable_text(parent, text, **kwargs):
+    """
+    Создать копируемый текстовый элемент (Text виджет в disabled состоянии).
+    Позволяет выделять и копировать текст, но не редактировать.
+    """
+    # Извлекаем параметры для Text виджета
+    bg = kwargs.pop('bg', parent.cget('bg') if hasattr(parent, 'cget') else 'white')
+    fg = kwargs.pop('fg', 'black')
+    font = kwargs.pop('font', ('Segoe UI', 10))
+    width = kwargs.pop('width', None)
+    height = kwargs.pop('height', 1)
+    wrap = kwargs.pop('wrap', 'none')
+    relief = kwargs.pop('relief', 'flat')
+    borderwidth = kwargs.pop('borderwidth', 0)
+    padx = kwargs.pop('padx', 0)
+    pady = kwargs.pop('pady', 0)
+    anchor = kwargs.pop('anchor', 'w')
+    
+    # Создаём Text виджет
+    text_widget = tk.Text(parent, bg=bg, fg=fg, font=font, 
+                         width=width, height=height, wrap=wrap,
+                         relief=relief, borderwidth=borderwidth,
+                         highlightthickness=0, cursor='ibeam')
+    text_widget.insert('1.0', text)
+    text_widget.config(state='disabled')  # Отключаем редактирование, но оставляем выделение
+    
+    # Применяем anchor через justify
+    if anchor == 'center':
+        text_widget.tag_add('center', '1.0', 'end')
+        text_widget.tag_config('center', justify='center')
+    elif anchor == 'e' or anchor == 'right':
+        text_widget.tag_add('right', '1.0', 'end')
+        text_widget.tag_config('right', justify='right')
+    
+    return text_widget
+
+def create_copyable_label(parent, text, **kwargs):
+    """
+    Создать копируемый Label (использует Entry в readonly режиме для коротких текстов,
+    или Text для длинных).
+    """
+    # Если текст короткий, используем Entry
+    if len(text) < 100 and '\n' not in text:
+        bg = kwargs.get('bg', parent.cget('bg') if hasattr(parent, 'cget') else 'white')
+        fg = kwargs.get('fg', 'black')
+        font = kwargs.get('font', ('Segoe UI', 10))
+        width = kwargs.get('width', len(text) + 2)
+        anchor = kwargs.get('anchor', 'w')
+        
+        entry = tk.Entry(parent, bg=bg, fg=fg, font=font, width=width,
+                        relief='flat', borderwidth=0, highlightthickness=0,
+                        readonlybackground=bg, cursor='ibeam')
+        entry.insert(0, text)
+        entry.config(state='readonly')
+        return entry
+    else:
+        # Для длинных текстов используем Text
+        return create_copyable_text(parent, text, **kwargs)
+
+# ========================================
 # ПАРСИНГ АРГУМЕНТОВ КОМАНДНОЙ СТРОКИ
 # ========================================
 def parse_arguments():
@@ -207,7 +289,7 @@ def get_schedules_for_warehouse_pv(warehouse, pv, warehouse_id=None, branch_id=N
     
     matching = []
     
-    # Способ 1: Точное сопоставление по ID (приоритетный)
+    # Сопоставление только по ID
     if warehouse_id is not None and branch_id is not None:
         for schedule in schedules_cache:
             sched_wh_id = schedule.get('warehouseId')
@@ -215,35 +297,6 @@ def get_schedules_for_warehouse_pv(warehouse, pv, warehouse_id=None, branch_id=N
             
             # Сравниваем ID (приводим к строке для надёжности)
             if str(sched_wh_id) == str(warehouse_id) and str(sched_branch_id) == str(branch_id):
-                matching.append(schedule)
-        
-        if matching:
-            return matching
-    
-    # Способ 2: Сопоставление по названиям (fallback)
-    warehouse_lower = warehouse.lower().strip() if warehouse else ""
-    pv_lower = pv.lower().strip() if pv else ""
-    
-    for schedule in schedules_cache:
-        sched_warehouse = (schedule.get('warehouseName') or '').lower().strip()
-        sched_branch = (schedule.get('branchAddress') or '').lower().strip()
-        
-        # Точное совпадение по названиям (предпочтительно)
-        if sched_warehouse == warehouse_lower and sched_branch == pv_lower:
-            matching.append(schedule)
-    
-    # Если точного совпадения нет - пробуем нечёткое (только для обратной совместимости)
-    if not matching:
-        for schedule in schedules_cache:
-            sched_warehouse = (schedule.get('warehouseName') or '').lower().strip()
-            sched_branch = (schedule.get('branchAddress') or '').lower().strip()
-            
-            # Нечёткое сопоставление
-            warehouse_match = (sched_warehouse == warehouse_lower or 
-                              warehouse_lower == sched_warehouse)
-            pv_match = (sched_branch == pv_lower or pv_lower == sched_branch)
-            
-            if warehouse_match and pv_match:
                 matching.append(schedule)
     
     return matching
@@ -1100,63 +1153,201 @@ def show_ml_recommendation_window(rec):
     win = tk.Toplevel(root)
     pv_label = normalize_pv_value(rec.pv)
     win.title(f"📋 ML Рекомендация: {rec.supplier} — {rec.weekday}")
-    win.geometry("750x650")
+    win.geometry("900x950")
+    win.minsize(700, 600)  # Минимальный размер окна
     win.configure(bg=COLORS['bg'])
+    
+    # Canvas для прокрутки всего окна с адаптивностью
+    canvas = tk.Canvas(win, bg=COLORS['bg'], highlightthickness=0)
+    scrollbar = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+    scrollable_frame = tk.Frame(canvas, bg=COLORS['bg'])
+    
+    def update_scrollregion(event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+    
+    def on_canvas_configure(event):
+        # Обновляем ширину scrollable_frame при изменении размера canvas
+        canvas_width = event.width
+        canvas.itemconfig(canvas_window, width=canvas_width)
+        update_scrollregion()
+    
+    scrollable_frame.bind("<Configure>", update_scrollregion)
+    canvas.bind("<Configure>", on_canvas_configure)
+    
+    canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    
+    def on_mousewheel(event):
+        canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+    def on_mousewheel_linux(event):
+        if event.num == 4:
+            canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            canvas.yview_scroll(1, "units")
+    
+    canvas.bind("<MouseWheel>", on_mousewheel)
+    canvas.bind("<Button-4>", on_mousewheel_linux)
+    canvas.bind("<Button-5>", on_mousewheel_linux)
+    
+    # Настройка адаптивности окна
+    win.grid_rowconfigure(0, weight=1)
+    win.grid_columnconfigure(0, weight=1)
+    
+    canvas.grid(row=0, column=0, sticky="nsew")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+    win.grid_columnconfigure(0, weight=1)
+    win.grid_rowconfigure(0, weight=1)
+    
+    # Используем scrollable_frame вместо win для всех элементов
+    parent_frame = scrollable_frame
     
     # Определяем цвет по сдвигу
     shift = rec.shift_minutes
     if abs(shift) > 45:
         header_color = COLORS['danger']
+        priority_text = "🔴 Высокий приоритет"
     elif abs(shift) > 25:
         header_color = COLORS['warning']
+        priority_text = "🟡 Средний приоритет"
     else:
         header_color = COLORS['info']
+        priority_text = "🔵 Низкий приоритет"
     
-    # Заголовок
-    header = tk.Frame(win, bg=header_color)
+    # Улучшенный заголовок с градиентом эффектом
+    header = tk.Frame(parent_frame, bg=header_color, height=120)
     header.pack(fill='x')
+    header.pack_propagate(False)
     
-    tk.Label(header, text="📋 ML Рекомендация по изменению расписания",
-            font=("Segoe UI", 14, "bold"), bg=header_color, fg='white').pack(pady=10)
-    tk.Label(header, text=f"{rec.supplier} | {rec.warehouse} | {pv_label}",
-            font=("Segoe UI", 10), bg=header_color, fg='white').pack(pady=(0, 10))
+    # Основной заголовок с адаптивностью
+    title_frame = tk.Frame(header, bg=header_color)
+    title_frame.pack(fill='x', padx=20, pady=(15, 5))
+    title_frame.grid_columnconfigure(0, weight=1)
     
-    # Информация о рекомендации
-    info_frame = tk.LabelFrame(win, text="📊 Параметры анализа", font=("Segoe UI", 10, "bold"), bg=COLORS['bg'])
-    info_frame.pack(fill='x', padx=20, pady=15)
+    tk.Label(title_frame, text="🤖 ML Рекомендация", 
+            font=("Segoe UI", 18, "bold"), bg=header_color, fg='white').grid(row=0, column=0, sticky='w')
+    tk.Label(title_frame, text=priority_text,
+            font=("Segoe UI", 9), bg=header_color, fg='white').grid(row=0, column=1, sticky='e', padx=10)
     
-    params = [
-        ("🏭 Поставщик:", rec.supplier),
-        ("📦 Склад:", rec.warehouse),
-        ("🏬 ПВ:", pv_label),
-        ("📅 День недели:", rec.weekday),
+    # Информация о направлении с адаптивностью
+    info_header = tk.Frame(header, bg=header_color)
+    info_header.pack(fill='x', padx=20, pady=(0, 10))
+    
+    # Используем grid для лучшей адаптивности
+    supplier_label = tk.Label(info_header, text=f"🏭 {rec.supplier}",
+            font=("Segoe UI", 11, "bold"), bg=header_color, fg='white')
+    supplier_label.grid(row=0, column=0, sticky='w', padx=(0, 15))
+    
+    warehouse_label = tk.Label(info_header, text=f"📦 {rec.warehouse}",
+            font=("Segoe UI", 11), bg=header_color, fg='#e3f2fd')
+    warehouse_label.grid(row=0, column=1, sticky='w', padx=(0, 15))
+    
+    pv_label_widget = tk.Label(info_header, text=f"🏬 {pv_label}",
+            font=("Segoe UI", 11), bg=header_color, fg='#e3f2fd')
+    pv_label_widget.grid(row=0, column=2, sticky='w')
+    
+    # Настройка адаптивности
+    info_header.grid_columnconfigure(0, weight=0)
+    info_header.grid_columnconfigure(1, weight=0)
+    info_header.grid_columnconfigure(2, weight=1)
+    
+    # Ключевые метрики в карточках с адаптивностью
+    metrics_frame = tk.Frame(parent_frame, bg=COLORS['bg'])
+    metrics_frame.pack(fill='x', padx=20, pady=15)
+    metrics_frame.grid_columnconfigure(0, weight=1, uniform="metric")
+    metrics_frame.grid_columnconfigure(1, weight=1, uniform="metric")
+    metrics_frame.grid_columnconfigure(2, weight=1, uniform="metric")
+    
+    # Функция создания карточки метрики
+    def create_metric_card(parent, label, value, color, icon="📊", col=0):
+        card = tk.Frame(parent, bg=COLORS['card'], relief='flat', bd=1, 
+                       highlightbackground='#e0e0e0', highlightthickness=1)
+        card.grid(row=0, column=col, sticky="nsew", padx=5)
+        parent.grid_columnconfigure(col, weight=1)
+        
+        inner = tk.Frame(card, bg=COLORS['card'])
+        inner.pack(fill='both', expand=True, padx=12, pady=10)
+        
+        tk.Label(inner, text=icon, font=("Segoe UI", 16), bg=COLORS['card']).pack()
+        tk.Label(inner, text=label, font=("Segoe UI", 9), bg=COLORS['card'], 
+                fg=COLORS['text_light'], wraplength=150).pack(pady=(5, 2))
+        tk.Label(inner, text=value, font=("Segoe UI", 14, "bold"), bg=COLORS['card'], 
+                fg=color, wraplength=150).pack()
+        
+        return card
+    
+    # Определяем цвет для сдвига
+    shift_color = COLORS['danger'] if shift > 0 else COLORS['success']
+    shift_icon = "⏰" if abs(shift) > 30 else "⏱️"
+    
+    # Определяем цвет для уверенности
+    conf_color = COLORS['success'] if rec.confidence > 0.7 else (COLORS['warning'] if rec.confidence > 0.5 else COLORS['text_light'])
+    
+    create_metric_card(metrics_frame, "Рекомендуемый сдвиг", f"{shift:+d} мин", shift_color, shift_icon, 0)
+    create_metric_card(metrics_frame, "Уверенность модели", f"{rec.confidence*100:.0f}%", conf_color, "🎯", 1)
+    create_metric_card(metrics_frame, "День недели", rec.weekday, COLORS['primary'], "📅", 2)
+    
+    # Детальная информация в улучшенном формате с адаптивностью
+    details_frame = tk.Frame(parent_frame, bg=COLORS['bg'])
+    details_frame.pack(fill='both', expand=True, padx=20, pady=10)
+    details_frame.grid_columnconfigure(0, weight=1, uniform="detail")
+    details_frame.grid_columnconfigure(1, weight=1, uniform="detail")
+    
+    # Левая колонка - Основные параметры
+    left_col = tk.Frame(details_frame, bg=COLORS['card'], relief='flat', bd=1,
+                       highlightbackground='#e0e0e0', highlightthickness=1)
+    left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    left_col.grid_rowconfigure(1, weight=1)
+    
+    tk.Label(left_col, text="📋 Основные параметры", font=("Segoe UI", 11, "bold"),
+            bg=COLORS['card'], fg=COLORS['primary']).grid(row=0, column=0, sticky='w', padx=15, pady=(15, 10))
+    
+    params_left = [
         ("⏰ Время заказа:", f"{rec.order_time_start} — {rec.order_time_end}"),
-        ("", ""),
-        ("📈 Текущее отклонение:", rec.current_expected_time),
+        ("📈 Текущее:", rec.current_expected_time),
         ("✅ Рекомендуемое:", rec.recommended_time),
-        ("📊 Сдвиг:", f"{shift:+d} мин"),
-        ("🎯 Уверенность:", f"{rec.confidence*100:.0f}%"),
         ("📉 Тренд:", rec.trend_detected),
     ]
     
-    for i, (label, value) in enumerate(params):
-        if label == "":
-            ttk.Separator(info_frame, orient='horizontal').grid(row=i, column=0, columnspan=2, sticky='ew', pady=5)
-        else:
-            tk.Label(info_frame, text=label, font=("Segoe UI", 10), bg=COLORS['bg'], anchor='e').grid(
-                row=i, column=0, sticky='e', padx=(10, 5), pady=3)
-            
-            fg_color = COLORS['text']
-            if "Сдвиг" in label:
-                fg_color = COLORS['danger'] if abs(shift) > 30 else (COLORS['warning'] if abs(shift) > 15 else COLORS['success'])
-            
-            tk.Label(info_frame, text=value, font=("Segoe UI", 10, "bold"), bg=COLORS['bg'], fg=fg_color, anchor='w').grid(
-                row=i, column=1, sticky='w', padx=(5, 10), pady=3)
+    params_inner = tk.Frame(left_col, bg=COLORS['card'])
+    params_inner.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 15))
     
-    # Рекомендация по расписанию
-    sched_frame = tk.LabelFrame(win, text="📋 Рекомендация по изменению расписания", 
-                                font=("Segoe UI", 10, "bold"), bg='#e3f2fd')
+    for i, (label, value) in enumerate(params_left):
+        row_frame = tk.Frame(params_inner, bg=COLORS['card'])
+        row_frame.grid(row=i, column=0, sticky='ew', pady=5)
+        params_inner.grid_columnconfigure(0, weight=1)
+        
+        tk.Label(row_frame, text=label, font=("Segoe UI", 9), bg=COLORS['card'],
+                fg=COLORS['text_light'], anchor='w').grid(row=0, column=0, sticky='w')
+        value_widget = create_copyable_label(row_frame, value, font=("Segoe UI", 9, "bold"),
+                                            bg=COLORS['card'], fg=COLORS['text'])
+        value_widget.grid(row=0, column=1, sticky='w', padx=(5, 0))
+        row_frame.grid_columnconfigure(1, weight=1)
+    
+    # Правая колонка - Рекомендация
+    right_col = tk.Frame(details_frame, bg=COLORS['card'], relief='flat', bd=1,
+                        highlightbackground='#e0e0e0', highlightthickness=1)
+    right_col.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+    right_col.grid_rowconfigure(1, weight=1)
+    
+    tk.Label(right_col, text="💡 Рекомендация", font=("Segoe UI", 11, "bold"),
+            bg=COLORS['card'], fg=COLORS['primary']).grid(row=0, column=0, sticky='w', padx=15, pady=(15, 10))
+    
+    rec_inner = tk.Frame(right_col, bg=COLORS['card'])
+    rec_inner.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 15))
+    rec_inner.grid_rowconfigure(0, weight=1)
+    rec_inner.grid_columnconfigure(0, weight=1)
+    
+    reason_widget = create_copyable_text(rec_inner, rec.reason,
+                                        font=("Segoe UI", 9), bg=COLORS['card'],
+                                        width=40, height=6, wrap='word')
+    reason_widget.grid(row=0, column=0, sticky="nsew")
+    
+    # Расписание в улучшенном формате
+    sched_frame = tk.Frame(parent_frame, bg=COLORS['bg'])
     sched_frame.pack(fill='x', padx=20, pady=10)
+    
+    tk.Label(sched_frame, text="📅 Расписание доставки", font=("Segoe UI", 12, "bold"),
+            bg=COLORS['bg'], fg=COLORS['primary']).pack(anchor='w', pady=(0, 10))
     
     # Ищем текущее расписание с учётом времени заказа
     current_sched_text = "Расписание не найдено"
@@ -1189,51 +1380,213 @@ def show_ml_recommendation_window(rec):
         # Определяем день недели для окна
         sched_weekday = sched.get('weekday', 0)
         sched_day_name = DAYS_RU[sched_weekday - 1] if 1 <= sched_weekday <= 7 else rec.weekday
-        next_day_note = f"\n⚠️ Заказы попадают в окно СЛЕДУЮЩЕГО дня ({sched_day_name})" if is_next_day else ""
+        next_day_note = f"⚠️ Заказы попадают в окно СЛЕДУЮЩЕГО дня ({sched_day_name})" if is_next_day else ""
         
-        current_sched_text = f"Окно расписания: {sched_day_name}, Заказ до {time_order} → Доставят к {deliver_by}\nТип: {type_str}\nДлительность: {duration} мин{next_day_note}"
+        # Текущее расписание - карточка
+        current_card = tk.Frame(sched_frame, bg='#e3f2fd', relief='flat', bd=1,
+                               highlightbackground='#90caf9', highlightthickness=1)
+        current_card.pack(fill='x', pady=(0, 10))
         
-        # Рассчитываем новую длительность
+        current_inner = tk.Frame(current_card, bg='#e3f2fd')
+        current_inner.pack(fill='x', padx=15, pady=12)
+        
+        tk.Label(current_inner, text="📋 Текущее расписание", font=("Segoe UI", 10, "bold"),
+                bg='#e3f2fd', fg=COLORS['primary']).pack(anchor='w', pady=(0, 8))
+        
+        sched_info = f"📅 {sched_day_name}\n⏰ Заказ до: {time_order}\n🚚 Доставят к: {deliver_by}\n{type_str}\n⏱️ Длительность: {duration} мин"
+        if next_day_note:
+            sched_info += f"\n{next_day_note}"
+        
+        current_text = create_copyable_text(current_inner, sched_info,
+                                           font=("Segoe UI", 9), bg='#e3f2fd',
+                                           width=70, height=6, wrap='word')
+        current_text.pack(anchor='w', fill='x')
+        
+        # Рекомендуемое расписание - карточка с акцентом
         new_duration = duration + shift
         new_deliver_by = calculate_expected_delivery(time_order, new_duration)
-        recommended_sched_text = f"✅ Рекомендуемое: Заказ до {time_order} → Доставят к {new_deliver_by}\nНовая длительность: {new_duration} мин ({shift:+d})"
-    
-    tk.Label(sched_frame, text=current_sched_text, font=("Segoe UI", 10), bg='#e3f2fd', 
-            justify='left', wraplength=680).pack(padx=15, pady=10, anchor='w')
-    
-    if recommended_sched_text:
-        ttk.Separator(sched_frame, orient='horizontal').pack(fill='x', padx=15)
-        tk.Label(sched_frame, text=recommended_sched_text, font=("Segoe UI", 10, "bold"), 
-                bg='#e3f2fd', fg=COLORS['success'], justify='left', wraplength=680).pack(padx=15, pady=10, anchor='w')
-    
-    # Причина рекомендации
-    reason_frame = tk.LabelFrame(win, text="💬 Причина рекомендации", font=("Segoe UI", 10, "bold"), bg=COLORS['bg'])
-    reason_frame.pack(fill='x', padx=20, pady=10)
-    
-    tk.Label(reason_frame, text=rec.reason, font=("Segoe UI", 10), bg=COLORS['bg'],
-            wraplength=680, justify='left').pack(padx=15, pady=15)
-    
-    # Примеры заказов
-    if rec.example_orders:
-        examples_frame = tk.LabelFrame(win, text="📋 Примеры заказов", font=("Segoe UI", 10, "bold"), bg=COLORS['bg'])
-        examples_frame.pack(fill='both', expand=True, padx=20, pady=10)
         
-        cols = ('№ заказа', 'Дата', 'Откл. (мин)')
+        recommended_card = tk.Frame(sched_frame, bg='#c8e6c9', relief='flat', bd=2,
+                                    highlightbackground=COLORS['success'], highlightthickness=2)
+        recommended_card.pack(fill='x')
+        
+        recommended_inner = tk.Frame(recommended_card, bg='#c8e6c9')
+        recommended_inner.pack(fill='x', padx=15, pady=12)
+        
+        tk.Label(recommended_inner, text="✅ Рекомендуемое расписание", 
+                font=("Segoe UI", 10, "bold"), bg='#c8e6c9', fg=COLORS['success']).pack(anchor='w', pady=(0, 8))
+        
+        rec_sched_info = f"📅 {sched_day_name}\n⏰ Заказ до: {time_order}\n🚚 Доставят к: {new_deliver_by}\n{type_str}\n⏱️ Новая длительность: {new_duration} мин ({shift:+d} мин)"
+        
+        recommended_text = create_copyable_text(recommended_inner, rec_sched_info,
+                                               font=("Segoe UI", 9, "bold"), bg='#c8e6c9',
+                                               fg=COLORS['success'], width=70, height=6, wrap='word')
+        recommended_text.pack(anchor='w', fill='x')
+    else:
+        no_sched_card = tk.Frame(sched_frame, bg='#ffebee', relief='flat', bd=1,
+                                highlightbackground='#ef9a9a', highlightthickness=1)
+        no_sched_card.pack(fill='x')
+        
+        tk.Label(no_sched_card, text="⚠️ Расписание не найдено для данного направления",
+                font=("Segoe UI", 10), bg='#ffebee', fg=COLORS['danger'],
+                pady=15).pack()
+    
+    # Данные, на основе которых принято решение - улучшенное отображение
+    data_section = tk.Frame(parent_frame, bg=COLORS['bg'])
+    data_section.pack(fill='x', padx=20, pady=15)
+    
+    tk.Label(data_section, text="📊 Данные для анализа", font=("Segoe UI", 12, "bold"),
+            bg=COLORS['bg'], fg=COLORS['primary']).pack(anchor='w', pady=(0, 10))
+    
+    data_frame = tk.Frame(data_section, bg=COLORS['card'], relief='flat', bd=1,
+                          highlightbackground='#e0e0e0', highlightthickness=1)
+    data_frame.pack(fill='both', expand=True)
+    
+    # Получаем статистику из исходных данных
+    if df_current is not None and not df_current.empty:
+        # Фильтруем данные по параметрам рекомендации
+        mask = (
+            (df_current['Поставщик'] == rec.supplier) &
+            (df_current['Склад'] == rec.warehouse) &
+            (df_current['ПВ'].apply(normalize_pv_value) == pv_label) &
+            (df_current['День_недели'] == rec.weekday)
+        )
+        
+        filtered_data = df_current[mask].copy()
+        
+        if not filtered_data.empty and 'Разница во времени привоза (мин.)' in filtered_data.columns:
+            # Сортируем по дате
+            if 'Время заказа позиции' in filtered_data.columns:
+                filtered_data = filtered_data.sort_values('Время заказа позиции')
+            
+            deviations = filtered_data['Разница во времени привоза (мин.)'].dropna()
+            
+            if len(deviations) > 0:
+                # Разделяем на периоды (как в ML-модели)
+                cutoff_idx = len(deviations) * 2 // 3
+                if cutoff_idx >= 3 and len(deviations) - cutoff_idx >= 3:
+                    recent_devs = deviations.iloc[cutoff_idx:].values
+                    older_devs = deviations.iloc[:cutoff_idx].values
+                    
+                    import statistics
+                    recent_median = statistics.median(recent_devs)
+                    older_median = statistics.median(older_devs)
+                    recent_mean = statistics.mean(recent_devs)
+                    older_mean = statistics.mean(older_devs)
+                    
+                    try:
+                        recent_std = statistics.stdev(recent_devs) if len(recent_devs) > 1 else 0
+                        older_std = statistics.stdev(older_devs) if len(older_devs) > 1 else 0
+                    except:
+                        recent_std = 0
+                        older_std = 0
+                    
+                    # Статистика по периодам
+                    stats_text = f"""📈 СТАТИСТИКА ПО ПЕРИОДАМ:
+
+🕐 ПРЕДЫДУЩИЙ ПЕРИОД (первые {cutoff_idx} заказов):
+   • Количество заказов: {len(older_devs)}
+   • Медиана отклонения: {older_median:+.1f} мин
+   • Среднее отклонение: {older_mean:+.1f} мин
+   • Стандартное отклонение: {older_std:.1f} мин
+   • Минимум: {min(older_devs):+.1f} мин
+   • Максимум: {max(older_devs):+.1f} мин
+
+🕑 ПОСЛЕДНИЙ ПЕРИОД (последние {len(recent_devs)} заказов):
+   • Количество заказов: {len(recent_devs)}
+   • Медиана отклонения: {recent_median:+.1f} мин
+   • Среднее отклонение: {recent_mean:+.1f} мин
+   • Стандартное отклонение: {recent_std:.1f} мин
+   • Минимум: {min(recent_devs):+.1f} мин
+   • Максимум: {max(recent_devs):+.1f} мин
+
+📊 ИЗМЕНЕНИЕ:
+   • Разница медиан: {recent_median - older_median:+.1f} мин
+   • Разница средних: {recent_mean - older_mean:+.1f} мин
+
+📋 ОБЩАЯ СТАТИСТИКА (все {len(deviations)} заказов):
+   • Медиана: {statistics.median(deviations):+.1f} мин
+   • Среднее: {statistics.mean(deviations):+.1f} мин
+   • Стандартное отклонение: {statistics.stdev(deviations) if len(deviations) > 1 else 0:.1f} мин
+   • Вовремя (±30 мин): {(deviations.between(-30, 30).sum() / len(deviations) * 100):.1f}%
+   • Опозданий (>30 мин): {((deviations > 30).sum() / len(deviations) * 100):.1f}%
+   • Ранних (<-30 мин): {((deviations < -30).sum() / len(deviations) * 100):.1f}%"""
+                    
+                    data_widget = create_copyable_text(data_frame, stats_text,
+                                                      font=("Segoe UI", 9), bg=COLORS['card'],
+                                                      width=80, height=20, wrap='word')
+                    data_widget.pack(fill='both', expand=True, padx=15, pady=15)
+                else:
+                    # Если недостаточно данных для разделения на периоды
+                    import statistics
+                    stats_text = f"""📊 ОБЩАЯ СТАТИСТИКА ({len(deviations)} заказов):
+   • Медиана отклонения: {statistics.median(deviations):+.1f} мин
+   • Среднее отклонение: {statistics.mean(deviations):+.1f} мин
+   • Стандартное отклонение: {statistics.stdev(deviations) if len(deviations) > 1 else 0:.1f} мин
+   • Минимум: {min(deviations):+.1f} мин
+   • Максимум: {max(deviations):+.1f} мин
+   • Вовремя (±30 мин): {(deviations.between(-30, 30).sum() / len(deviations) * 100):.1f}%
+   • Опозданий (>30 мин): {((deviations > 30).sum() / len(deviations) * 100):.1f}%
+   • Ранних (<-30 мин): {((deviations < -30).sum() / len(deviations) * 100):.1f}%"""
+                    
+                    data_widget = create_copyable_text(data_frame, stats_text,
+                                                      font=("Segoe UI", 9), bg=COLORS['card'],
+                                                      width=80, height=12, wrap='word')
+                    data_widget.pack(fill='both', expand=True, padx=15, pady=15)
+            else:
+                tk.Label(data_frame, text="📭 Нет данных об отклонениях для анализа",
+                        font=("Segoe UI", 10), bg=COLORS['card'], fg=COLORS['text_light']).pack(pady=20)
+        else:
+            tk.Label(data_frame, text="📭 Недостаточно данных для анализа",
+                    font=("Segoe UI", 10), bg=COLORS['card'], fg=COLORS['text_light']).pack(pady=20)
+    else:
+        tk.Label(data_frame, text="📭 Данные не загружены",
+                font=("Segoe UI", 10), bg=COLORS['card'], fg=COLORS['text_light']).pack(pady=20)
+    
+    # Примеры заказов - улучшенное отображение
+    if rec.example_orders:
+        examples_section = tk.Frame(parent_frame, bg=COLORS['bg'])
+        examples_section.pack(fill='x', padx=20, pady=15)
+        
+        tk.Label(examples_section, text="📋 Примеры заказов", font=("Segoe UI", 12, "bold"),
+                bg=COLORS['bg'], fg=COLORS['primary']).pack(anchor='w', pady=(0, 10))
+        
+        examples_frame = tk.Frame(examples_section, bg=COLORS['card'], relief='flat', bd=1,
+                                  highlightbackground='#e0e0e0', highlightthickness=1)
+        examples_frame.pack(fill='x')
+        
+        cols = ('№ заказа', 'Время заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
         tree_ex = ttk.Treeview(examples_frame, columns=cols, show='headings', height=5)
-        tree_ex.column('№ заказа', width=100)
-        tree_ex.column('Дата', width=150)
-        tree_ex.column('Откл. (мин)', width=100)
+        enable_treeview_copy(tree_ex)  # Включаем копирование
+        tree_ex.column('№ заказа', width=120)
+        tree_ex.column('Время заказа', width=180)
+        tree_ex.column('План привоза', width=180)
+        tree_ex.column('Факт привоза', width=180)
+        tree_ex.column('Откл. (мин)', width=120)
         for col in cols:
             tree_ex.heading(col, text=col)
         
+        # Настройка цветов для отклонений
+        tree_ex.tag_configure('good', foreground=COLORS['success'])
+        tree_ex.tag_configure('medium', foreground=COLORS['warning'])
+        tree_ex.tag_configure('bad', foreground=COLORS['danger'])
+        
         for ex in rec.example_orders[:5]:
+            deviation = ex.get('deviation', 0)
+            if -30 <= deviation <= 30:
+                tags = ('good',)
+            elif 30 < abs(deviation) <= 60:
+                tags = ('medium',)
+            else:
+                tags = ('bad',)
+            
             tree_ex.insert('', 'end', values=(
                 ex.get('order_id', ''),
                 ex.get('date', ''),
-                f"{ex.get('deviation', 0):+.0f}"
-            ))
+                f"{deviation:+.0f}"
+            ), tags=tags)
         
-        tree_ex.pack(fill='both', expand=True, padx=10, pady=5)
+        tree_ex.pack(fill='both', expand=True, padx=10, pady=10)
         
         # Двойной клик для открытия в CRM
         def on_example_click(event):
@@ -1245,18 +1598,23 @@ def show_ml_recommendation_window(rec):
         
         tree_ex.bind('<Double-1>', on_example_click)
         tk.Label(examples_frame, text="💡 Двойной клик — открыть заказ в CRM",
-                font=("Segoe UI", 8), fg=COLORS['text_light'], bg=COLORS['bg']).pack()
+                font=("Segoe UI", 8), fg=COLORS['text_light'], bg=COLORS['card']).pack(pady=(0, 10))
     
-    # Кнопки
-    btn_frame = tk.Frame(win, bg=COLORS['bg'])
-    btn_frame.pack(pady=15)
+    # Кнопки действий
+    btn_frame = tk.Frame(parent_frame, bg=COLORS['bg'])
+    btn_frame.pack(fill='x', padx=20, pady=20)
     
-    tk.Button(btn_frame, text="📊 Анализ поставщика",
-             command=lambda: show_supplier_details(rec.supplier, rec.warehouse, rec.pv),
-             font=("Segoe UI", 10), bg=COLORS['info'], fg='white', width=18).pack(side='left', padx=5)
+    btn_inner = tk.Frame(btn_frame, bg=COLORS['bg'])
+    btn_inner.pack()
     
-    tk.Button(btn_frame, text="✖ Закрыть", command=win.destroy,
-             font=("Segoe UI", 10), bg=COLORS['text_light'], fg='white', width=12).pack(side='left', padx=5)
+    tk.Button(btn_inner, text="📊 Детальный анализ поставщика",
+             command=lambda: (win.destroy(), show_supplier_details(rec.supplier, rec.warehouse, rec.pv)),
+             font=("Segoe UI", 10, "bold"), bg=COLORS['info'], fg='white', 
+             width=25, height=2, cursor='hand2', relief='flat').pack(side='left', padx=5)
+    
+    tk.Button(btn_inner, text="✖ Закрыть", command=win.destroy,
+             font=("Segoe UI", 10), bg=COLORS['text_light'], fg='white', 
+             width=15, height=2, cursor='hand2', relief='flat').pack(side='left', padx=5)
 
 
 def update_status(text, status_type="info"):
@@ -1314,13 +1672,12 @@ def show_orders_for_day(supplier, warehouse, pv, day, parent_df):
     table_frame = tk.Frame(win, bg=COLORS['bg'])
     table_frame.pack(fill='both', expand=True, padx=10, pady=10)
     
-    cols = ('№ заказа', 'Дата заказа', 'Час', 'План привоза', 'Факт привоза', 'Откл. (мин)')
+    cols = ('№ заказа', 'Время заказа', 'План доставки', 'Факт доставки', 'Откл. (мин)')
     tree = SortableTreeview(table_frame, columns=cols, show='headings', height=20)
     tree.column('№ заказа', width=100)
-    tree.column('Дата заказа', width=150)
-    tree.column('Час', width=80)
-    tree.column('План привоза', width=180)
-    tree.column('Факт привоза', width=180)
+    tree.column('Время заказа', width=180)
+    tree.column('План доставки', width=180)
+    tree.column('Факт доставки', width=180)
     tree.column('Откл. (мин)', width=100)
     add_tooltips_to_treeview(tree, cols)
     
@@ -1337,8 +1694,7 @@ def show_orders_for_day(supplier, warehouse, pv, day, parent_df):
         
         tree.insert('', 'end', values=(
             row['№ заказа'],
-            row['Время заказа позиции'].strftime('%d.%m.%Y') if pd.notna(row['Время заказа позиции']) else '',
-            row['Время заказа позиции'].strftime('%H:%M') if pd.notna(row['Время заказа позиции']) else '',
+            row['Время заказа позиции'].strftime('%d.%m.%Y %H:%M') if pd.notna(row['Время заказа позиции']) else '',
             row['Рассчетное время привоза'].strftime('%d.%m.%Y %H:%M') if pd.notna(row['Рассчетное время привоза']) else '',
             row['Время поступления на склад'].strftime('%d.%m.%Y %H:%M') if pd.notna(row['Время поступления на склад']) else '',
             f"{dev:+.0f}" if pd.notna(dev) else ''
@@ -1620,8 +1976,11 @@ def show_supplier_details(supplier, warehouse, pv=None):
         # Информация о направлении
         info_detail = tk.Frame(detail_win, bg='#e8f5e9')
         info_detail.pack(fill='x', padx=10, pady=5)
-        tk.Label(info_detail, text=f"📦 Поставщик: {supplier}\n🏭 Склад: {warehouse} → ПВ: {pv_label}",
-                font=("Segoe UI", 10), bg='#e8f5e9', fg=COLORS['text'], justify='left').pack(pady=5, padx=10, anchor='w')
+        info_text = f"📦 Поставщик: {supplier}\n🏭 Склад: {warehouse} → ПВ: {pv_label}"
+        info_text_widget = create_copyable_text(info_detail, info_text,
+                                               font=("Segoe UI", 10), bg='#e8f5e9', fg=COLORS['text'],
+                                               width=60, height=2, wrap='word')
+        info_text_widget.pack(pady=5, padx=10, anchor='w', fill='x')
         
         # Статистика отклонений
         stats_frame_detail = tk.LabelFrame(detail_win, text="📈 Статистика отклонений", 
@@ -1633,8 +1992,7 @@ def show_supplier_details(supplier, warehouse, pv=None):
         if orders_count > 0:
             deviations = window_data['Разница во времени привоза (мин.)'].dropna()
             
-            stats_text = f"""
-📊 Всего заказов: {orders_count}
+            stats_text = f"""📊 Всего заказов: {orders_count}
 📉 Медиана отклонения: {median_dev:+.0f} мин
 ✅ Вовремя (±30 мин): {on_time_pct:.0f}%
 📋 Текущая длительность: {delivery_duration} мин
@@ -1644,10 +2002,11 @@ def show_supplier_details(supplier, warehouse, pv=None):
 • Раньше (< -30 мин): {(deviations < -30).sum()} заказов ({(deviations < -30).sum() / len(deviations) * 100:.0f}%)
 • Вовремя (±30 мин): {deviations.between(-30, 30).sum()} заказов ({deviations.between(-30, 30).sum() / len(deviations) * 100:.0f}%)
 • Опоздание (30-60 мин): {deviations.between(30, 60, inclusive='right').sum()} заказов ({deviations.between(30, 60, inclusive='right').sum() / len(deviations) * 100:.0f}%)
-• Сильное опоздание (> 60 мин): {(deviations > 60).sum()} заказов ({(deviations > 60).sum() / len(deviations) * 100:.0f}%)
-"""
-            tk.Label(stats_frame_detail, text=stats_text, font=("Segoe UI", 10), bg=COLORS['bg'],
-                    justify='left').pack(anchor='w', padx=10, pady=5)
+• Сильное опоздание (> 60 мин): {(deviations > 60).sum()} заказов ({(deviations > 60).sum() / len(deviations) * 100:.0f}%)"""
+            stats_text_widget = create_copyable_text(stats_frame_detail, stats_text, 
+                                                    font=("Segoe UI", 10), bg=COLORS['bg'],
+                                                    width=70, height=10, wrap='word')
+            stats_text_widget.pack(anchor='w', padx=10, pady=5, fill='x')
             
             # Причина подсветки
             reason_frame = tk.LabelFrame(detail_win, text="❓ Почему подсвечено", 
@@ -1674,36 +2033,100 @@ def show_supplier_details(supplier, warehouse, pv=None):
             if not reasons:
                 reasons.append("✅ Окно работает в пределах нормы")
             
-            tk.Label(reason_frame, text="\n".join(reasons), font=("Segoe UI", 10), bg=COLORS['bg'],
-                    justify='left', fg=COLORS['danger'] if '❌' in "\n".join(reasons) else (COLORS['warning'] if '⚠️' in "\n".join(reasons) else COLORS['success'])).pack(anchor='w', padx=10, pady=5)
+            reasons_text = "\n".join(reasons)
+            reason_color = COLORS['danger'] if '❌' in reasons_text else (COLORS['warning'] if '⚠️' in reasons_text else COLORS['success'])
+            reason_text_widget = create_copyable_text(reason_frame, reasons_text, 
+                                                     font=("Segoe UI", 10), bg=COLORS['bg'],
+                                                     fg=reason_color, width=70, height=len(reasons)+1, wrap='word')
+            reason_text_widget.pack(anchor='w', padx=10, pady=5, fill='x')
             
             # Таблица заказов
             orders_frame = tk.LabelFrame(detail_win, text="📋 Заказы в этом окне", 
                                         font=("Segoe UI", 11, "bold"), bg=COLORS['bg'], fg=COLORS['primary'])
             orders_frame.pack(fill='both', expand=True, padx=10, pady=10)
             
-            cols_orders = ('№ заказа', 'Дата', 'Время заказа', 'Откл. (мин)', 'Статус')
+            cols_orders = ('№ заказа', 'Время заказа', 'План доставки', 'Факт доставки', 'Откл. (мин)', 'Статус')
             tree_orders = ttk.Treeview(orders_frame, columns=cols_orders, show='headings', height=10)
             for col in cols_orders:
                 tree_orders.heading(col, text=col)
                 tree_orders.column(col, width=120)
             tree_orders.column('№ заказа', width=100)
+            tree_orders.column('Время заказа', width=180)
+            tree_orders.column('План доставки', width=180)
+            tree_orders.column('Факт доставки', width=180)
             tree_orders.column('Откл. (мин)', width=100)
+            tree_orders.column('Статус', width=120)
             
             tree_orders.tag_configure('good', foreground=COLORS['success'])
             tree_orders.tag_configure('medium', foreground=COLORS['warning'])
             tree_orders.tag_configure('bad', foreground=COLORS['danger'])
             
             # Показываем заказы
-            for _, order in window_data.head(50).iterrows():
-                order_num = order.get('№ заказа', '—')
-                order_date = order.get('Дата', '')
-                if hasattr(order_date, 'strftime'):
-                    order_date = order_date.strftime('%d.%m.%Y')
-                order_time = order.get('Время заказа позиции', '')
-                if hasattr(order_time, 'strftime'):
-                    order_time = order_time.strftime('%H:%M')
-                deviation = order.get('Разница во времени привоза (мин.)', 0)
+            for idx, order in window_data.head(50).iterrows():
+                # Получаем номер заказа
+                try:
+                    order_num = str(order['№ заказа']) if '№ заказа' in order.index and pd.notna(order['№ заказа']) else '—'
+                except:
+                    order_num = '—'
+                
+                # Время заказа (полная дата и время)
+                try:
+                    if 'Время заказа позиции' in order.index:
+                        order_time_val = order['Время заказа позиции']
+                        if pd.notna(order_time_val):
+                            if isinstance(order_time_val, pd.Timestamp) or hasattr(order_time_val, 'strftime'):
+                                order_time = order_time_val.strftime('%d.%m.%Y %H:%M')
+                            else:
+                                order_time = str(order_time_val)
+                        else:
+                            order_time = "—"
+                    else:
+                        order_time = "—"
+                except Exception as e:
+                    order_time = "—"
+                
+                # Время плановой доставки
+                try:
+                    if 'Рассчетное время привоза' in order.index:
+                        planned_time_val = order['Рассчетное время привоза']
+                        if pd.notna(planned_time_val):
+                            if isinstance(planned_time_val, pd.Timestamp) or hasattr(planned_time_val, 'strftime'):
+                                planned_time = planned_time_val.strftime('%d.%m.%Y %H:%M')
+                            else:
+                                planned_time = str(planned_time_val)
+                        else:
+                            planned_time = "—"
+                    else:
+                        planned_time = "—"
+                except Exception as e:
+                    planned_time = "—"
+                
+                # Время фактической доставки
+                try:
+                    if 'Время поступления на склад' in order.index:
+                        actual_time_val = order['Время поступления на склад']
+                        if pd.notna(actual_time_val):
+                            if isinstance(actual_time_val, pd.Timestamp) or hasattr(actual_time_val, 'strftime'):
+                                actual_time = actual_time_val.strftime('%d.%m.%Y %H:%M')
+                            else:
+                                actual_time = str(actual_time_val)
+                        else:
+                            actual_time = "—"
+                    else:
+                        actual_time = "—"
+                except Exception as e:
+                    actual_time = "—"
+                
+                # Отклонение
+                try:
+                    if 'Разница во времени привоза (мин.)' in order.index:
+                        deviation = order['Разница во времени привоза (мин.)']
+                        if pd.isna(deviation):
+                            deviation = 0
+                    else:
+                        deviation = 0
+                except:
+                    deviation = 0
                 
                 if pd.isna(deviation):
                     status = "❓ Нет данных"
@@ -1720,14 +2143,16 @@ def show_supplier_details(supplier, warehouse, pv=None):
                 
                 tree_orders.insert('', 'end', values=(
                     order_num,
-                    order_date,
                     order_time,
+                    planned_time,
+                    actual_time,
                     f"{deviation:+.0f}" if not pd.isna(deviation) else "—",
                     status
                 ), tags=tags)
             
             scrollbar_orders = ttk.Scrollbar(orders_frame, orient='vertical', command=tree_orders.yview)
             tree_orders.configure(yscrollcommand=scrollbar_orders.set)
+            enable_treeview_copy(tree_orders)  # Включаем копирование
             tree_orders.pack(side='left', fill='both', expand=True)
             scrollbar_orders.pack(side='right', fill='y')
             
@@ -1756,6 +2181,64 @@ def show_supplier_details(supplier, warehouse, pv=None):
             time_order = sched.get('timeOrder', '')
             if time_order:
                 schedule_index[(day_num, time_order)] = sched
+    
+    # Функция для определения окна для заказа
+    def get_window_for_order(order_row):
+        """Определить окно расписания для заказа (первое подходящее)"""
+        order_day_name = order_row.get('День_недели', '')
+        order_time = order_row.get('Время заказа позиции')
+        
+        if pd.isna(order_time):
+            return None
+        
+        weekday_num = WEEKDAY_TO_NUM.get(order_day_name, 0)
+        if weekday_num == 0:
+            return None
+        
+        # Получаем все окна этого дня, сортируем по времени
+        day_windows = []
+        for (day, time_slot), sched in schedule_index.items():
+            if day == weekday_num:
+                try:
+                    h, m = map(int, time_slot.split(':'))
+                    minutes = h * 60 + m
+                    day_windows.append((minutes, sched, time_slot))
+                except:
+                    pass
+        
+        if not day_windows:
+            return None
+        
+        day_windows.sort(key=lambda x: x[0])  # Сортируем по времени
+        
+        # Время заказа в минутах
+        order_minutes = order_time.hour * 60 + order_time.minute
+        
+        # Ищем первое окно, в которое попадает заказ
+        prev_window_minutes = -1
+        for window_minutes, sched, time_slot in day_windows:
+            if prev_window_minutes < order_minutes <= window_minutes:
+                return (sched, time_slot)
+            prev_window_minutes = window_minutes
+        
+        # Если заказ после всех окон - возвращаем None (или можно вернуть последнее)
+        return None
+    
+    # Распределяем заказы по окнам (каждый заказ только в первое подходящее окно)
+    orders_by_window = {}  # (day_num, time_slot) -> DataFrame
+    for _, order_row in subset_wd.iterrows():
+        window_info = get_window_for_order(order_row)
+        if window_info:
+            sched, time_slot = window_info
+            weekday_num = sched.get('weekday')
+            key = (weekday_num, time_slot)
+            if key not in orders_by_window:
+                orders_by_window[key] = []
+            orders_by_window[key].append(order_row)
+    
+    # Преобразуем списки в DataFrame
+    for key in orders_by_window:
+        orders_by_window[key] = pd.DataFrame(orders_by_window[key])
     
     # Создаём заголовок сетки - дни недели как столбцы
     header_bg = '#1a237e'
@@ -1800,15 +2283,12 @@ def show_supplier_details(supplier, warehouse, pv=None):
                 delivery_type = sched.get('type', 'self')
                 deliver_by = calculate_expected_delivery(time_order, delivery_duration)
                 
-                # Фильтруем заказы для этого окна
-                try:
-                    order_hour = int(time_order.split(':')[0])
-                except:
-                    order_hour = 0
-                
-                day_mask = subset_wd['День_недели'] == day_name
-                time_mask = (subset_wd['Час'] >= max(0, order_hour - 4)) & (subset_wd['Час'] <= order_hour)
-                window_data = subset_wd[day_mask & time_mask]
+                # Получаем заказы для этого окна (уже распределённые)
+                window_key = (day_num, time_slot)
+                if window_key in orders_by_window:
+                    window_data = orders_by_window[window_key]
+                else:
+                    window_data = pd.DataFrame()
                 
                 orders_count = len(window_data)
                 schedule_count += 1
@@ -1924,6 +2404,7 @@ def show_supplier_details(supplier, warehouse, pv=None):
     
     cols_pv = ('ПВ', 'Заказов', 'Среднее откл.', 'Медиана', 'Ст. откл.', '% вовремя')
     tree_pv = SortableTreeview(table_frame_pv, columns=cols_pv, show='headings', height=12)
+    enable_treeview_copy(tree_pv)  # Включаем копирование
     for col in cols_pv:
         tree_pv.column(col, width=120 if col == 'ПВ' else 100)
     tree_pv.column('ПВ', width=250)
@@ -3081,6 +3562,7 @@ table_frame_stats.pack(fill='both', expand=True, padx=10, pady=5)
 
 cols_stats = ('Поставщик', 'Склад', 'ПВ', 'Заказов', 'Ср. откл.', 'Медиана', 'Ст. откл.', '% вовремя')
 tree_stats = SortableTreeview(table_frame_stats, columns=cols_stats, show='headings', height=22)
+enable_treeview_copy(tree_stats)  # Включаем копирование
 tree_stats.column('Поставщик', width=200)
 tree_stats.column('Склад', width=180)
 tree_stats.column('ПВ', width=200)
@@ -3136,6 +3618,7 @@ table_frame_ml_rec.pack(fill='both', expand=True, padx=10, pady=5)
 
 cols_ml_rec = ('Поставщик', 'Склад', 'ПВ', 'День', 'Заказ до', 'Текущее расп.', 'Корректир.', 'Уверен.', 'Причина')
 tree_ml_rec = SortableTreeview(table_frame_ml_rec, columns=cols_ml_rec, show='headings', height=20)
+enable_treeview_copy(tree_ml_rec)  # Включаем копирование
 tree_ml_rec.column('Поставщик', width=150)
 tree_ml_rec.column('Склад', width=130)
 tree_ml_rec.column('ПВ', width=180)
@@ -3189,6 +3672,7 @@ tree_frame_raw.pack(fill='both', expand=True, padx=10, pady=5)
 
 cols_raw = ('№ заказа', 'Поставщик', 'Склад', 'ПВ', 'Бренд', 'Артикул', 'Дата заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
 tree_raw = SortableTreeview(tree_frame_raw, columns=cols_raw, show='headings', height=20)
+enable_treeview_copy(tree_raw)  # Включаем копирование
 tree_raw.column('№ заказа', width=90)
 tree_raw.column('Поставщик', width=150)
 tree_raw.column('Склад', width=120)
