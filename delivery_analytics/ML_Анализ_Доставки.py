@@ -141,14 +141,22 @@ def create_copyable_label(parent, text, **kwargs):
 # ========================================
 def parse_arguments():
     """Парсинг аргументов командной строки"""
+    # Проверяем, запущен ли скрипт как exe (PyInstaller)
+    is_frozen = getattr(sys, 'frozen', False)
+    
+    # Для exe файла по умолчанию используем prod, для скрипта - local
+    default_env = 'prod' if is_frozen else 'local'
+    
     parser = argparse.ArgumentParser(
         description='ML-Аналитика доставок - программа для анализа времени привоза',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  python ML_Анализ_Доставки.py                    # Локальный CRM (по умолчанию)
+  python ML_Анализ_Доставки.py                    # Локальный CRM (по умолчанию для скрипта)
+  ML_Delivery_Analytics.exe                       # Production CRM (по умолчанию для exe)
   python ML_Анализ_Доставки.py --env local        # Локальный CRM
   python ML_Анализ_Доставки.py --env prod         # Production CRM
+  ML_Delivery_Analytics.exe --env local           # Локальный CRM (для exe)
   python ML_Анализ_Доставки.py --crm-url http://custom.crm.com  # Произвольный URL
         """
     )
@@ -156,8 +164,8 @@ def parse_arguments():
     parser.add_argument(
         '--env',
         choices=['local', 'prod'],
-        default='local',
-        help='Окружение: local (локальный CRM) или prod (production). По умолчанию: local'
+        default=default_env,
+        help=f'Окружение: local (локальный CRM) или prod (production). По умолчанию: {default_env}'
     )
     
     parser.add_argument(
