@@ -1553,16 +1553,28 @@ def show_ml_recommendation_window(rec):
         
         examples_frame = tk.Frame(examples_section, bg=COLORS['card'], relief='flat', bd=1,
                                   highlightbackground='#e0e0e0', highlightthickness=1)
-        examples_frame.pack(fill='x')
+        examples_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
-        cols = ('№ заказа', 'Время заказа', 'План привоза', 'Факт привоза', 'Откл. (мин)')
-        tree_ex = ttk.Treeview(examples_frame, columns=cols, show='headings', height=5)
+        # Frame для таблицы с прокруткой
+        table_frame_ex = tk.Frame(examples_frame, bg=COLORS['card'])
+        table_frame_ex.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        cols = ('№ заказа', 'Дата', 'Время заказа', 'План доставки', 'Факт доставки', 'Откл. (мин)')
+        tree_ex = ttk.Treeview(table_frame_ex, columns=cols, show='headings', height=5)
         enable_treeview_copy(tree_ex)  # Включаем копирование
+        
+        # Явно скрываем колонку #0 (tree column)
+        tree_ex.column('#0', width=0, stretch=False)
+        
+        # Настраиваем все колонки - как в рабочем примере
         tree_ex.column('№ заказа', width=120)
-        tree_ex.column('Время заказа', width=180)
-        tree_ex.column('План привоза', width=180)
-        tree_ex.column('Факт привоза', width=180)
-        tree_ex.column('Откл. (мин)', width=120)
+        tree_ex.column('Дата', width=150)
+        tree_ex.column('Время заказа', width=120)
+        tree_ex.column('План доставки', width=150)
+        tree_ex.column('Факт доставки', width=150)
+        tree_ex.column('Откл. (мин)', width=100)
+        
+        # Устанавливаем заголовки для всех колонок
         for col in cols:
             tree_ex.heading(col, text=col)
         
@@ -1571,8 +1583,12 @@ def show_ml_recommendation_window(rec):
         tree_ex.tag_configure('medium', foreground=COLORS['warning'])
         tree_ex.tag_configure('bad', foreground=COLORS['danger'])
         
+        # Отладочный вывод для проверки данных
+        import sys
+        debug_info = []
+        
         for ex in rec.example_orders[:5]:
-            deviation = ex.get('deviation', 0)
+            deviation = ex.get('deviation', 0) or 0
             if -30 <= deviation <= 30:
                 tags = ('good',)
             elif 30 < abs(deviation) <= 60:
@@ -1580,13 +1596,60 @@ def show_ml_recommendation_window(rec):
             else:
                 tags = ('bad',)
             
+            # Получаем значения напрямую из словаря
+            order_id = ex.get('order_id', '') or ''
+            order_date = ex.get('order_date', '') or ''
+            order_time = ex.get('order_time', '') or ''
+            plan_time = ex.get('plan_time', '') or ''
+            fact_time = ex.get('fact_time', '') or ''
+            
+            # Отладочная информация
+            debug_info.append({
+                'order_id': order_id,
+                'order_date': order_date,
+                'order_time': order_time,
+                'plan_time': plan_time,
+                'fact_time': fact_time
+            })
+            
+            # Вставляем данные - порядок должен соответствовать порядку колонок
             tree_ex.insert('', 'end', values=(
-                ex.get('order_id', ''),
-                ex.get('date', ''),
-                f"{deviation:+.0f}"
+                str(order_id),
+                str(order_date),
+                str(order_time),
+                str(plan_time),
+                str(fact_time),
+                f"{deviation:+.0f}" if deviation else ''
             ), tags=tags)
         
-        tree_ex.pack(fill='both', expand=True, padx=10, pady=10)
+        # Выводим отладочную информацию в консоль (можно убрать после проверки)
+        if debug_info:
+            print("DEBUG: Данные example_orders:")
+            for i, info in enumerate(debug_info):
+                print(f"  Заказ {i+1}: {info}")
+        
+        # Прокрутка для таблицы
+        scrollbar_ex_v = ttk.Scrollbar(table_frame_ex, orient='vertical', command=tree_ex.yview)
+        scrollbar_ex_h = ttk.Scrollbar(table_frame_ex, orient='horizontal', command=tree_ex.xview)
+        tree_ex.configure(yscrollcommand=scrollbar_ex_v.set, xscrollcommand=scrollbar_ex_h.set)
+        
+        # Размещение через pack (как в некоторых рабочих примерах)
+        tree_ex.pack(side='left', fill='both', expand=True)
+        scrollbar_ex_v.pack(side='right', fill='y')
+        scrollbar_ex_h.pack(side='bottom', fill='x')
+        
+        # Принудительное обновление для отображения всех колонок
+        tree_ex.update_idletasks()
+        
+        # Дополнительная проверка: убеждаемся, что все колонки видны
+        # Если какая-то колонка имеет ширину 0, устанавливаем минимальную
+        for col in cols:
+            try:
+                col_width = tree_ex.column(col, 'width')
+                if not col_width or int(col_width) == 0:
+                    tree_ex.column(col, width=100)
+            except:
+                tree_ex.column(col, width=100)
         
         # Двойной клик для открытия в CRM
         def on_example_click(event):
@@ -1598,7 +1661,7 @@ def show_ml_recommendation_window(rec):
         
         tree_ex.bind('<Double-1>', on_example_click)
         tk.Label(examples_frame, text="💡 Двойной клик — открыть заказ в CRM",
-                font=("Segoe UI", 8), fg=COLORS['text_light'], bg=COLORS['card']).pack(pady=(0, 10))
+                font=("Segoe UI", 8), fg=COLORS['text_light'], bg=COLORS['card']).pack(pady=(5, 0))
     
     # Кнопки действий
     btn_frame = tk.Frame(parent_frame, bg=COLORS['bg'])

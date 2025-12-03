@@ -423,6 +423,14 @@ class DeliveryMLPredictor:
         Returns:
             Список словарей с данными заказов
         """
+        # Отладочный вывод в начале метода
+        # print(f"DEBUG get_example_orders: Вызван с supplier={supplier}, warehouse={warehouse}, weekday={weekday}, hour={hour}, pv={pv}")
+        # print(f"DEBUG: df.shape = {df.shape}")
+        # print(f"DEBUG: Колонки в df: {list(df.columns)}")
+        # print(f"DEBUG: Есть 'Время заказа позиции'? {'Время заказа позиции' in df.columns}")
+        # print(f"DEBUG: Есть 'Рассчетное время привоза'? {'Рассчетное время привоза' in df.columns}")
+        # print(f"DEBUG: Есть 'Время поступления на склад'? {'Время поступления на склад' in df.columns}")
+        
         mask = (
             (df['Поставщик'] == supplier) &
             (df['Склад'] == warehouse)
@@ -443,18 +451,127 @@ class DeliveryMLPredictor:
         # Берем последние заказы
         subset = subset.sort_values('Время заказа позиции', ascending=False).head(limit)
         
+        # Отладочный вывод для диагностики
+        # print(f"DEBUG get_example_orders: subset.shape = {subset.shape}")
+        # if not subset.empty:
+        #     print(f"DEBUG: Колонки в subset: {list(subset.columns)}")
+        #     print(f"DEBUG: Первая строка subset:")
+        #     first_row = subset.iloc[0]
+        #     print(f"  order_id: {first_row.get('№ заказа', 'N/A')}")
+        #     print(f"  Время заказа позиции: {first_row.get('Время заказа позиции', 'N/A')} (type: {type(first_row.get('Время заказа позиции', None))})")
+        #     print(f"  Рассчетное время привоза: {first_row.get('Рассчетное время привоза', 'N/A')} (type: {type(first_row.get('Рассчетное время привоза', None))})")
+        #     print(f"  Время поступления на склад: {first_row.get('Время поступления на склад', 'N/A')} (type: {type(first_row.get('Время поступления на склад', None))})")
+        #     print(f"  pd.notna(Время заказа): {pd.notna(first_row.get('Время заказа позиции', None))}")
+        
         examples = []
-        for _, row in subset.iterrows():
-            dev = row.get('Разница во времени привоза (мин.)', 0)
-            examples.append({
-                'order_id': row.get('№ заказа', ''),
-                'pv': row.get('ПВ', self.default_pv_label),
-                'order_date': row['Время заказа позиции'].strftime('%d.%m.%Y') if pd.notna(row['Время заказа позиции']) else '',
-                'order_time': row['Время заказа позиции'].strftime('%H:%M') if pd.notna(row['Время заказа позиции']) else '',
-                'plan_time': row['Рассчетное время привоза'].strftime('%H:%M') if pd.notna(row.get('Рассчетное время привоза')) else '',
-                'fact_time': row['Время поступления на склад'].strftime('%H:%M') if pd.notna(row.get('Время поступления на склад')) else '',
-                'deviation': int(dev) if pd.notna(dev) else 0
-            })
+        for idx, row in subset.iterrows():
+            try:
+                dev = row.get('Разница во времени привоза (мин.)', 0)
+                
+                # Получаем значения напрямую из колонок с проверкой
+                # Используем безопасный доступ через get() с проверкой наличия колонки
+                try:
+                    order_time_val = row['Время заказа позиции'] if 'Время заказа позиции' in row.index else pd.NaT
+                except (KeyError, IndexError):
+                    order_time_val = pd.NaT
+                
+                try:
+                    plan_time_val = row['Рассчетное время привоза'] if 'Рассчетное время привоза' in row.index else pd.NaT
+                except (KeyError, IndexError):
+                    plan_time_val = pd.NaT
+                
+                try:
+                    fact_time_val = row['Время поступления на склад'] if 'Время поступления на склад' in row.index else pd.NaT
+                except (KeyError, IndexError):
+                    fact_time_val = pd.NaT
+                
+                # Отладочный вывод для первой строки
+                if len(examples) == 0:
+                    print(f"DEBUG: Извлечение данных для первого заказа:")
+                    print(f"  order_time_val: {order_time_val} (type: {type(order_time_val)}, pd.notna: {pd.notna(order_time_val)})")
+                    print(f"  plan_time_val: {plan_time_val} (type: {type(plan_time_val)}, pd.notna: {pd.notna(plan_time_val)})")
+                    print(f"  fact_time_val: {fact_time_val} (type: {type(fact_time_val)}, pd.notna: {pd.notna(fact_time_val)})")
+                
+                # Форматируем даты и времена
+                order_date = ''
+                order_time = ''
+                if pd.notna(order_time_val):
+                    try:
+                        if hasattr(order_time_val, 'strftime'):
+                            order_date = order_time_val.strftime('%d.%m.%Y')
+                            order_time = order_time_val.strftime('%H:%M')
+                        else:
+                            # Если это строка, пытаемся преобразовать
+                            dt = pd.to_datetime(order_time_val, errors='coerce')
+                            if pd.notna(dt):
+                                order_date = dt.strftime('%d.%m.%Y')
+                                order_time = dt.strftime('%H:%M')
+                    except Exception as e:
+                        if len(examples) == 0:
+                            print(f"DEBUG: Ошибка форматирования order_time_val: {e}")
+                        pass
+                else:
+                    if len(examples) == 0:
+                        print(f"DEBUG: order_time_val is NaN or None")
+                
+                plan_time = ''
+                if pd.notna(plan_time_val):
+                    try:
+                        if hasattr(plan_time_val, 'strftime'):
+                            plan_time = plan_time_val.strftime('%H:%M')
+                        else:
+                            dt = pd.to_datetime(plan_time_val, errors='coerce')
+                            if pd.notna(dt):
+                                plan_time = dt.strftime('%H:%M')
+                    except Exception as e:
+                        if len(examples) == 0:
+                            print(f"DEBUG: Ошибка форматирования plan_time_val: {e}")
+                        pass
+                else:
+                    if len(examples) == 0:
+                        print(f"DEBUG: plan_time_val is NaN or None")
+                
+                fact_time = ''
+                if pd.notna(fact_time_val):
+                    try:
+                        if hasattr(fact_time_val, 'strftime'):
+                            fact_time = fact_time_val.strftime('%H:%M')
+                        else:
+                            dt = pd.to_datetime(fact_time_val, errors='coerce')
+                            if pd.notna(dt):
+                                fact_time = dt.strftime('%H:%M')
+                    except Exception as e:
+                        if len(examples) == 0:
+                            print(f"DEBUG: Ошибка форматирования fact_time_val: {e}")
+                        pass
+                else:
+                    if len(examples) == 0:
+                        print(f"DEBUG: fact_time_val is NaN or None")
+                
+                examples.append({
+                    'order_id': row.get('№ заказа', ''),
+                    'pv': row.get('ПВ', self.default_pv_label),
+                    'order_date': order_date,
+                    'order_time': order_time,
+                    'plan_time': plan_time,
+                    'fact_time': fact_time,
+                    'deviation': int(dev) if pd.notna(dev) else 0
+                })
+            except Exception as e:
+                # В случае ошибки добавляем запись с пустыми значениями
+                if len(examples) == 0:
+                    print(f"DEBUG: Исключение при обработке строки: {e}")
+                    import traceback
+                    traceback.print_exc()
+                examples.append({
+                    'order_id': row.get('№ заказа', ''),
+                    'pv': row.get('ПВ', self.default_pv_label),
+                    'order_date': '',
+                    'order_time': '',
+                    'plan_time': '',
+                    'fact_time': '',
+                    'deviation': 0
+                })
         
         return examples
     
@@ -553,7 +670,12 @@ class DeliveryMLPredictor:
                 reason = self._generate_reason(trend, shift_minutes, weekday_name, hour)
                 
                 # Получаем примеры заказов
+                print(f"DEBUG generate_recommendations: Перед вызовом get_example_orders")
+                print(f"DEBUG: df_prep.shape = {df_prep.shape}")
+                print(f"DEBUG: Колонки в df_prep: {list(df_prep.columns)[:10]}...")  # Первые 10 колонок
+                print(f"DEBUG: Есть нужные колонки? 'Время заказа позиции'={('Время заказа позиции' in df_prep.columns)}, 'Рассчетное время привоза'={('Рассчетное время привоза' in df_prep.columns)}, 'Время поступления на склад'={('Время поступления на склад' in df_prep.columns)}")
                 examples = self.get_example_orders(df_prep, supplier, warehouse, weekday, hour, pv=pv, limit=5)
+                print(f"DEBUG generate_recommendations: После вызова get_example_orders, получено {len(examples)} примеров")
                 
                 rec = ScheduleRecommendation(
                     supplier=supplier,
@@ -767,11 +889,58 @@ class DeliveryMLPredictor:
                 reason = f"Ранние привозы в {weekday_name} для окна 'Заказ до {time_order}'. " \
                          f"Медиана отклонений: {shift_minutes:+d} мин. Можно уменьшить длительность доставки."
             
-            # Примеры заказов
-            examples = [
-                {'order_id': d['order_id'], 'date': d['date'].strftime('%d.%m.%Y %H:%M') if hasattr(d['date'], 'strftime') else str(d['date']), 'deviation': d['deviation']}
-                for d in data[-5:]
-            ]
+            # Примеры заказов - используем get_example_orders для правильного формата
+            # Получаем час из time_order для вызова get_example_orders
+            try:
+                h, m = map(int, time_order.split(':'))
+                hour_for_examples = h
+            except:
+                hour_for_examples = 0
+            
+            # Используем исходный DataFrame для получения примеров
+            examples = self.get_example_orders(df_prep, supplier, warehouse, weekday, hour_for_examples, pv=pv, limit=5)
+            
+            # Если get_example_orders вернул пустой список, формируем из data
+            if not examples:
+                examples = []
+                for d in data[-5:]:
+                    order_date_val = d['date']
+                    order_id = d.get('order_id', '')
+                    deviation = d.get('deviation', 0)
+                    
+                    # Форматируем дату и время
+                    if pd.notna(order_date_val) and hasattr(order_date_val, 'strftime'):
+                        order_date = order_date_val.strftime('%d.%m.%Y')
+                        order_time = order_date_val.strftime('%H:%M')
+                    else:
+                        order_date = ''
+                        order_time = ''
+                    
+                    # Для plan_time и fact_time нужно получить из исходной строки
+                    # Найдем строку в df_prep по order_id
+                    plan_time = ''
+                    fact_time = ''
+                    if order_id:
+                        matching_rows = df_prep[df_prep['№ заказа'] == order_id]
+                        if not matching_rows.empty:
+                            row = matching_rows.iloc[0]
+                            if pd.notna(row.get('Рассчетное время привоза')):
+                                plan_val = row['Рассчетное время привоза']
+                                if hasattr(plan_val, 'strftime'):
+                                    plan_time = plan_val.strftime('%H:%M')
+                            if pd.notna(row.get('Время поступления на склад')):
+                                fact_val = row['Время поступления на склад']
+                                if hasattr(fact_val, 'strftime'):
+                                    fact_time = fact_val.strftime('%H:%M')
+                    
+                    examples.append({
+                        'order_id': order_id,
+                        'order_date': order_date,
+                        'order_time': order_time,
+                        'plan_time': plan_time,
+                        'fact_time': fact_time,
+                        'deviation': int(deviation) if pd.notna(deviation) else 0
+                    })
             
             rec = ScheduleRecommendation(
                 supplier=supplier,
