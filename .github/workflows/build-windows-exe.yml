@@ -17,6 +17,9 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write  # Необходимо для создания релизов
+      actions: read     # Для чтения workflow
     
     steps:
       - name: Checkout code

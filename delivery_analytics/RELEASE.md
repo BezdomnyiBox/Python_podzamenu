@@ -99,6 +99,23 @@ python -m PyInstaller ML_Delivery_Analytics.spec --clean --noconfirm
 - Проверьте, что тег начинается с `v` (например: `v2.1.0`)
 - Убедитесь, что тег запушен: `git push origin v2.1.0`
 
+**Ошибка "Resource not accessible by integration" (403):**
+Это означает, что GitHub Actions не имеет прав на создание релизов.
+
+**Решение:**
+1. Перейдите в **Settings** → **Actions** → **General**
+2. В разделе **Workflow permissions** выберите:
+   - ✅ **Read and write permissions** (или **Read repository contents and packages permissions**)
+   - ✅ Включите **Allow GitHub Actions to create and approve pull requests**
+3. Сохраните изменения
+4. Перезапустите workflow
+
+**Альтернативное решение (если настройки не помогают):**
+1. Создайте Personal Access Token (PAT) с правами `repo`
+2. Перейдите в **Settings** → **Secrets and variables** → **Actions**
+3. Создайте новый secret: `RELEASE_TOKEN` со значением вашего PAT
+4. В workflow замените `GITHUB_TOKEN` на `RELEASE_TOKEN` в секции создания релиза
+
 **Ошибка при сборке:**
 - Проверьте логи в Actions
 - Убедитесь, что все зависимости в `requirements.txt`
