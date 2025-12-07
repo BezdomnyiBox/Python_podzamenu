@@ -37,6 +37,11 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 import matplotlib.dates as mdates
+# Подавление предупреждений о шрифтах
+import warnings
+import logging
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib.font_manager')
 # Настройка шрифтов для русского языка и эмодзи
 import platform
 if platform.system() == 'Windows':
@@ -47,9 +52,13 @@ if platform.system() == 'Windows':
     plt.rcParams['font.sans-serif'] = ['Segoe UI', 'Segoe UI Emoji', 'Microsoft YaHei', 'DejaVu Sans', 'Noto Color Emoji']
 else:
     # На Linux/Mac используем системные шрифты
-    plt.rcParams['font.family'] = ['DejaVu Sans', 'Noto Color Emoji', 'Apple Color Emoji']
-    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Noto Color Emoji', 'Apple Color Emoji']
+    # DejaVu Sans всегда доступен, эмодзи-шрифты опциональны
+    plt.rcParams['font.family'] = ['DejaVu Sans', 'Liberation Sans', 'Arial', 'sans-serif']
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Liberation Sans', 'Arial', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
+
+# Граф поставок
+import networkx as nx
 
 # Импорт ML модуля
 from ml_predictor import DeliveryMLPredictor, ScheduleRecommendation, TrendType
@@ -99,7 +108,7 @@ def create_copyable_text(parent, text, **kwargs):
     text_widget = tk.Text(parent, bg=bg, fg=fg, font=font, 
                          width=width, height=height, wrap=wrap,
                          relief=relief, borderwidth=borderwidth,
-                         highlightthickness=0, cursor='ibeam')
+                         highlightthickness=0, cursor='xterm')
     text_widget.insert('1.0', text)
     text_widget.config(state='disabled')  # Отключаем редактирование, но оставляем выделение
     
@@ -128,7 +137,7 @@ def create_copyable_label(parent, text, **kwargs):
         
         entry = tk.Entry(parent, bg=bg, fg=fg, font=font, width=width,
                         relief='flat', borderwidth=0, highlightthickness=0,
-                        readonlybackground=bg, cursor='ibeam')
+                        readonlybackground=bg, cursor='xterm')
         entry.insert(0, text)
         entry.config(state='readonly')
         return entry
@@ -649,6 +658,7 @@ def fetch_data():
                 root.after(0, update_pv_filter_options)
                 root.after(0, update_stats_display)
                 root.after(0, update_raw_data_display)
+                root.after(0, update_supply_chain_map)
                 root.after(0, lambda: update_status(f"✅ Загружено {len(df):,} записей", "success"))
                 root.after(0, train_model_async)
         except Exception as e:
@@ -785,6 +795,7 @@ def fetch_historical_data():
                 root.after(0, update_pv_filter_options)
                 root.after(0, update_stats_display)
                 root.after(0, update_raw_data_display)
+                root.after(0, update_supply_chain_map)
                 root.after(0, lambda: update_status(f"✅ Загружено {len(df):,} записей. Сохранено в кэш.", "success"))
                 root.after(0, lambda: messagebox.showinfo(
                     "✅ Готово", 
@@ -829,6 +840,7 @@ def load_cached_data():
         update_pv_filter_options()
         update_stats_display()
         update_raw_data_display()
+        update_supply_chain_map()
         update_status(f"✅ Загружено {len(df):,} записей из кэша ({cache_date.strftime('%d.%m.%Y')})", "success")
         
         train_model_async()
@@ -996,6 +1008,462 @@ def update_raw_data_display():
     total = len(df_current)
     shown = min(total, 1000)
     lbl_raw_count.config(text=f"Записей: {shown:,} из {total:,}")
+
+
+# ========================================
+# КАРТА ПОСТАВОК (SUPPLY CHAIN MAP)
+# ========================================
+supply_chain_canvas = None
+supply_chain_fig = None
+
+
+def update_supply_chain_map():
+    """Обновление карты поставок: Склад поставщика → ПВ"""
+    global supply_chain_canvas, supply_chain_fig
+    
+    if df_current is None or df_current.empty:
+        return
+    
+    # Очищаем предыдущий график
+    if supply_chain_canvas is not None:
+        supply_chain_canvas.get_tk_widget().destroy()
+    
+    # Агрегируем данные по направлениям
+    route_stats = df_current.groupby(['Поставщик', 'Склад', 'ПВ']).agg(
+        orders=('№ заказа', 'nunique'),
+        mean_deviation=('Разница во времени привоза (мин.)', 'mean'),
+        median_deviation=('Разница во времени привоза (мин.)', 'median'),
+        std_deviation=('Разница во времени привоза (мин.)', 'std')
+    ).reset_index()
+    
+    # Рассчитываем % вовремя для каждого направления
+    def calc_on_time_pct(row):
+        mask = (
+            (df_current['Поставщик'] == row['Поставщик']) &
+            (df_current['Склад'] == row['Склад']) &
+            (df_current['ПВ'] == row['ПВ'])
+        )
+        subset = df_current[mask]
+        if len(subset) == 0:
+            return 0
+        return (subset['Разница во времени привоза (мин.)'].between(-30, 30).sum() / len(subset)) * 100
+    
+    route_stats['on_time_pct'] = route_stats.apply(calc_on_time_pct, axis=1)
+    
+    # Создаём объединённые узлы "Поставщик: Склад"
+    route_stats['supplier_warehouse'] = route_stats['Поставщик'] + ': ' + route_stats['Склад']
+    
+    # Создаём граф
+    G = nx.DiGraph()
+    
+    # Собираем уникальные узлы
+    supplier_warehouses = route_stats['supplier_warehouse'].unique()
+    pvs = route_stats['ПВ'].unique()
+    
+    # Статистика по узлам
+    sw_stats = route_stats.groupby('supplier_warehouse').agg({
+        'orders': 'sum',
+        'on_time_pct': 'mean'
+    }).to_dict('index')
+    
+    pv_stats = route_stats.groupby('ПВ').agg({
+        'orders': 'sum',
+        'on_time_pct': 'mean'
+    }).to_dict('index')
+    
+    # Добавляем узлы с атрибутами
+    for sw in supplier_warehouses:
+        stats = sw_stats.get(sw, {'orders': 0, 'on_time_pct': 50})
+        # Формируем короткую метку для отображения
+        label_parts = sw.split(': ')
+        if len(label_parts) == 2:
+            supplier_short = label_parts[0][:15] if len(label_parts[0]) > 15 else label_parts[0]
+            warehouse_short = label_parts[1][:15] if len(label_parts[1]) > 15 else label_parts[1]
+            label = f"{supplier_short}\n{warehouse_short}"
+        else:
+            label = sw[:30]
+        
+        G.add_node(f"SW:{sw}", 
+                   node_type='supplier_warehouse', 
+                   label=label,
+                   full_label=sw,
+                   orders=stats['orders'],
+                   on_time_pct=stats['on_time_pct'])
+    
+    for p in pvs:
+        stats = pv_stats.get(p, {'orders': 0, 'on_time_pct': 50})
+        pv_label = normalize_pv_value(p)
+        G.add_node(f"P:{p}", 
+                   node_type='pv', 
+                   label=pv_label[:25],
+                   orders=stats['orders'],
+                   on_time_pct=stats['on_time_pct'])
+    
+    # Добавляем рёбра: Склад поставщика → ПВ
+    for _, row in route_stats.iterrows():
+        sw_key = f"SW:{row['supplier_warehouse']}"
+        pv_key = f"P:{row['ПВ']}"
+        G.add_edge(sw_key, pv_key, 
+                   weight=row['orders'],
+                   on_time_pct=row['on_time_pct'])
+    
+    # Создаём фигуру
+    supply_chain_fig = Figure(figsize=(14, 10), dpi=100, facecolor=COLORS['bg'])
+    ax = supply_chain_fig.add_subplot(111)
+    ax.set_facecolor('#fafafa')
+    
+    # Позиционирование узлов в две колонки
+    pos = {}
+    
+    # Сортируем узлы по количеству заказов для лучшего распределения
+    sw_sorted = sorted(supplier_warehouses, key=lambda x: sw_stats.get(x, {}).get('orders', 0), reverse=True)
+    pvs_sorted = sorted(pvs, key=lambda x: pv_stats.get(x, {}).get('orders', 0), reverse=True)
+    
+    # Позиции для двух колонок
+    for i, sw in enumerate(sw_sorted):
+        pos[f"SW:{sw}"] = (0, -i * 1.5)
+    for i, p in enumerate(pvs_sorted):
+        pos[f"P:{p}"] = (3, -i * 1.5)
+    
+    # Центрируем по вертикали
+    max_height = max(len(supplier_warehouses), len(pvs)) * 1.5
+    for node in pos:
+        if node.startswith('SW:'):
+            offset = (max_height - len(supplier_warehouses) * 1.5) / 2
+            pos[node] = (pos[node][0], pos[node][1] - offset)
+        else:
+            offset = (max_height - len(pvs) * 1.5) / 2
+            pos[node] = (pos[node][0], pos[node][1] - offset)
+    
+    # Функция для цвета по проценту вовремя
+    def get_color_by_on_time(pct):
+        if pct >= 80:
+            return '#4caf50'  # Зелёный - хорошо
+        elif pct >= 60:
+            return '#ff9800'  # Оранжевый - средне
+        else:
+            return '#f44336'  # Красный - проблема
+    
+    # Рисуем рёбра с цветом по качеству
+    max_weight = max([d['weight'] for _, _, d in G.edges(data=True)]) if G.edges() else 1
+    
+    for u, v, data in G.edges(data=True):
+        weight = data.get('weight', 1)
+        on_time = data.get('on_time_pct', 50)
+        
+        # Ширина линии зависит от количества заказов
+        width = 0.5 + (weight / max_weight) * 4
+        
+        # Цвет зависит от % вовремя
+        color = get_color_by_on_time(on_time)
+        alpha = 0.4 + (weight / max_weight) * 0.5
+        
+        x1, y1 = pos[u]
+        x2, y2 = pos[v]
+        
+        ax.annotate("",
+                    xy=(x2, y2), xycoords='data',
+                    xytext=(x1, y1), textcoords='data',
+                    arrowprops=dict(arrowstyle="-|>",
+                                    color=color,
+                                    alpha=alpha,
+                                    linewidth=width,
+                                    connectionstyle="arc3,rad=0.1"))
+    
+    # Рисуем узлы
+    max_orders = max([G.nodes[n].get('orders', 1) for n in G.nodes()]) if G.nodes() else 1
+    
+    for node in G.nodes():
+        x, y = pos[node]
+        node_data = G.nodes[node]
+        orders = node_data.get('orders', 1)
+        on_time = node_data.get('on_time_pct', 50)
+        label = node_data.get('label', node)
+        node_type = node_data.get('node_type', '')
+        
+        # Размер узла зависит от количества заказов
+        size = 300 + (orders / max_orders) * 2000
+        
+        # Цвет узла зависит от % вовремя
+        color = get_color_by_on_time(on_time)
+        
+        # Форма зависит от типа
+        if node_type == 'supplier_warehouse':
+            marker = 's'  # Квадрат
+            edge_color = '#1a237e'
+        else:
+            marker = '^'  # Треугольник
+            edge_color = '#00695c'
+        
+        ax.scatter(x, y, s=size, c=color, marker=marker, 
+                   edgecolors=edge_color, linewidths=2, alpha=0.85, zorder=5)
+        
+        # Подпись узла (многострочная для склада поставщика)
+        if node_type == 'supplier_warehouse':
+            fontsize = 7
+            # Разбиваем метку на строки если нужно
+            lines = label.split('\n')
+            y_offset = -size**0.5/10 - 15
+            for i, line in enumerate(lines):
+                ax.annotate(line, (x, y), textcoords="offset points", 
+                           xytext=(0, y_offset - i * 12), ha='center', fontsize=fontsize,
+                           fontweight='bold', color='#333')
+        else:
+            fontsize = 7 if len(label) > 15 else 8
+            ax.annotate(label, (x, y), textcoords="offset points", 
+                       xytext=(0, -size**0.5/10 - 10), ha='center', fontsize=fontsize,
+                       fontweight='bold', color='#333')
+    
+    # Заголовки колонок
+    y_top = 0.5
+    ax.text(0, y_top, '🏭 Склад поставщика', ha='center', fontsize=12, fontweight='bold', color=COLORS['header'])
+    ax.text(3, y_top, '🏬 ПВ', ha='center', fontsize=12, fontweight='bold', color='#00695c')
+    
+    # Легенда
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+    
+    legend_elements = [
+        Patch(facecolor='#4caf50', edgecolor='#333', label='≥80% вовремя (хорошо)'),
+        Patch(facecolor='#ff9800', edgecolor='#333', label='60-80% вовремя (средне)'),
+        Patch(facecolor='#f44336', edgecolor='#333', label='<60% вовремя (проблема)'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', markersize=10, 
+               markeredgecolor='#1a237e', label='Склад поставщика'),
+        Line2D([0], [0], marker='^', color='w', markerfacecolor='gray', markersize=10,
+               markeredgecolor='#00695c', label='ПВ'),
+    ]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=8, framealpha=0.9)
+    
+    # Статистика
+    total_routes = len(route_stats)
+    total_orders = route_stats['orders'].sum()
+    avg_on_time = route_stats['on_time_pct'].mean()
+    
+    problematic = route_stats[route_stats['on_time_pct'] < 60]
+    good = route_stats[route_stats['on_time_pct'] >= 80]
+    
+    stats_text = (f"Направлений: {total_routes} | Заказов: {total_orders:,}\n"
+                  f"✅ Хороших (≥80%): {len(good)} | ⚠️ Проблемных (<60%): {len(problematic)}\n"
+                  f"Средний % вовремя: {avg_on_time:.1f}%")
+    
+    ax.text(0.02, 0.02, stats_text, transform=ax.transAxes, fontsize=9,
+            verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+    
+    ax.set_xlim(-0.8, 3.8)
+    ax.axis('off')
+    ax.set_title('🗺️ Карта цепочки поставок: Склад поставщика → ПВ', 
+                 fontsize=14, fontweight='bold', pad=15)
+    
+    supply_chain_fig.tight_layout()
+    
+    # Отображаем на canvas
+    supply_chain_canvas = FigureCanvasTkAgg(supply_chain_fig, master=supply_chain_frame)
+    supply_chain_canvas.draw()
+    supply_chain_canvas.get_tk_widget().pack(fill='both', expand=True)
+    
+    # Обновляем счётчик
+    lbl_map_count.config(text=f"Направлений: {total_routes} | Проблемных: {len(problematic)}")
+
+
+def show_problematic_routes():
+    """Показать список проблемных направлений"""
+    if df_current is None:
+        messagebox.showwarning("⚠️ Внимание", "Сначала загрузите данные")
+        return
+    
+    # Агрегируем данные
+    route_stats = df_current.groupby(['Поставщик', 'Склад', 'ПВ']).agg(
+        orders=('№ заказа', 'nunique'),
+        mean_deviation=('Разница во времени привоза (мин.)', 'mean'),
+        median_deviation=('Разница во времени привоза (мин.)', 'median')
+    ).reset_index()
+    
+    # Рассчитываем % вовремя
+    def calc_on_time_pct(row):
+        mask = (
+            (df_current['Поставщик'] == row['Поставщик']) &
+            (df_current['Склад'] == row['Склад']) &
+            (df_current['ПВ'] == row['ПВ'])
+        )
+        subset = df_current[mask]
+        if len(subset) == 0:
+            return 0
+        return (subset['Разница во времени привоза (мин.)'].between(-30, 30).sum() / len(subset)) * 100
+    
+    route_stats['on_time_pct'] = route_stats.apply(calc_on_time_pct, axis=1)
+    
+    # Фильтруем проблемные (< 60% вовремя)
+    problematic = route_stats[route_stats['on_time_pct'] < 60].sort_values('on_time_pct')
+    
+    if problematic.empty:
+        messagebox.showinfo("✅ Отлично!", "Проблемных направлений не найдено (все ≥60% вовремя)")
+        return
+    
+    # Окно со списком
+    win = tk.Toplevel(root)
+    win.title("🔴 Проблемные направления")
+    win.geometry("1000x600")
+    win.configure(bg=COLORS['bg'])
+    
+    header = tk.Frame(win, bg=COLORS['danger'])
+    header.pack(fill='x')
+    tk.Label(header, text=f"🔴 Проблемные направления (<60% вовремя): {len(problematic)}", 
+            font=("Segoe UI", 14, "bold"), bg=COLORS['danger'], fg='white').pack(pady=10)
+    
+    # Таблица
+    table_frame = tk.Frame(win, bg=COLORS['bg'])
+    table_frame.pack(fill='both', expand=True, padx=10, pady=10)
+    
+    cols = ('Поставщик', 'Склад', 'ПВ', 'Заказов', '% вовремя', 'Ср. откл.', 'Медиана')
+    tree = SortableTreeview(table_frame, columns=cols, show='headings', height=20)
+    enable_treeview_copy(tree)
+    
+    tree.column('Поставщик', width=180)
+    tree.column('Склад', width=150)
+    tree.column('ПВ', width=200)
+    tree.column('Заказов', width=80)
+    tree.column('% вовремя', width=90)
+    tree.column('Ср. откл.', width=90)
+    tree.column('Медиана', width=80)
+    
+    for _, row in problematic.iterrows():
+        tree.insert('', 'end', values=(
+            row['Поставщик'][:30],
+            row['Склад'][:25],
+            normalize_pv_value(row['ПВ'])[:35],
+            row['orders'],
+            f"{row['on_time_pct']:.1f}%",
+            f"{row['mean_deviation']:+.0f}",
+            f"{row['median_deviation']:+.0f}"
+        ))
+    
+    scrollbar_v = ttk.Scrollbar(table_frame, orient='vertical', command=tree.yview)
+    tree.configure(yscrollcommand=scrollbar_v.set)
+    tree.grid(row=0, column=0, sticky='nsew')
+    scrollbar_v.grid(row=0, column=1, sticky='ns')
+    table_frame.grid_rowconfigure(0, weight=1)
+    table_frame.grid_columnconfigure(0, weight=1)
+    
+    # Двойной клик - детали
+    def on_double_click(event):
+        selected = tree.selection()
+        if selected:
+            values = tree.item(selected[0])['values']
+            supplier = str(values[0])
+            warehouse = str(values[1])
+            pv = str(values[2])
+            # Находим полные названия
+            for _, row in problematic.iterrows():
+                if (row['Поставщик'][:30] == supplier and 
+                    row['Склад'][:25] == warehouse):
+                    show_supplier_details(row['Поставщик'], row['Склад'], row['ПВ'])
+                    break
+    
+    tree.bind('<Double-1>', on_double_click)
+
+
+def show_popular_routes():
+    """Показать список популярных направлений"""
+    if df_current is None:
+        messagebox.showwarning("⚠️ Внимание", "Сначала загрузите данные")
+        return
+    
+    # Агрегируем данные
+    route_stats = df_current.groupby(['Поставщик', 'Склад', 'ПВ']).agg(
+        orders=('№ заказа', 'nunique'),
+        mean_deviation=('Разница во времени привоза (мин.)', 'mean'),
+        median_deviation=('Разница во времени привоза (мин.)', 'median')
+    ).reset_index()
+    
+    # Рассчитываем % вовремя
+    def calc_on_time_pct(row):
+        mask = (
+            (df_current['Поставщик'] == row['Поставщик']) &
+            (df_current['Склад'] == row['Склад']) &
+            (df_current['ПВ'] == row['ПВ'])
+        )
+        subset = df_current[mask]
+        if len(subset) == 0:
+            return 0
+        return (subset['Разница во времени привоза (мин.)'].between(-30, 30).sum() / len(subset)) * 100
+    
+    route_stats['on_time_pct'] = route_stats.apply(calc_on_time_pct, axis=1)
+    
+    # Топ-30 по количеству заказов
+    popular = route_stats.nlargest(30, 'orders')
+    
+    # Окно со списком
+    win = tk.Toplevel(root)
+    win.title("🔥 Популярные направления")
+    win.geometry("1000x600")
+    win.configure(bg=COLORS['bg'])
+    
+    header = tk.Frame(win, bg=COLORS['info'])
+    header.pack(fill='x')
+    tk.Label(header, text=f"🔥 Топ-30 популярных направлений", 
+            font=("Segoe UI", 14, "bold"), bg=COLORS['info'], fg='white').pack(pady=10)
+    
+    # Таблица
+    table_frame = tk.Frame(win, bg=COLORS['bg'])
+    table_frame.pack(fill='both', expand=True, padx=10, pady=10)
+    
+    cols = ('Поставщик', 'Склад', 'ПВ', 'Заказов', '% вовремя', 'Ср. откл.', 'Медиана')
+    tree = SortableTreeview(table_frame, columns=cols, show='headings', height=20)
+    enable_treeview_copy(tree)
+    
+    tree.column('Поставщик', width=180)
+    tree.column('Склад', width=150)
+    tree.column('ПВ', width=200)
+    tree.column('Заказов', width=80)
+    tree.column('% вовремя', width=90)
+    tree.column('Ср. откл.', width=90)
+    tree.column('Медиана', width=80)
+    
+    tree.tag_configure('good', background='#c8e6c9')
+    tree.tag_configure('medium', background='#fff9c4')
+    tree.tag_configure('bad', background='#ffcdd2')
+    
+    for _, row in popular.iterrows():
+        on_time = row['on_time_pct']
+        if on_time >= 80:
+            tag = 'good'
+        elif on_time >= 60:
+            tag = 'medium'
+        else:
+            tag = 'bad'
+        
+        tree.insert('', 'end', values=(
+            row['Поставщик'][:30],
+            row['Склад'][:25],
+            normalize_pv_value(row['ПВ'])[:35],
+            row['orders'],
+            f"{row['on_time_pct']:.1f}%",
+            f"{row['mean_deviation']:+.0f}",
+            f"{row['median_deviation']:+.0f}"
+        ), tags=(tag,))
+    
+    scrollbar_v = ttk.Scrollbar(table_frame, orient='vertical', command=tree.yview)
+    tree.configure(yscrollcommand=scrollbar_v.set)
+    tree.grid(row=0, column=0, sticky='nsew')
+    scrollbar_v.grid(row=0, column=1, sticky='ns')
+    table_frame.grid_rowconfigure(0, weight=1)
+    table_frame.grid_columnconfigure(0, weight=1)
+    
+    # Двойной клик - детали
+    def on_double_click(event):
+        selected = tree.selection()
+        if selected:
+            values = tree.item(selected[0])['values']
+            supplier = str(values[0])
+            warehouse = str(values[1])
+            # Находим полные названия
+            for _, row in popular.iterrows():
+                if (row['Поставщик'][:30] == supplier and 
+                    row['Склад'][:25] == warehouse):
+                    show_supplier_details(row['Поставщик'], row['Склад'], row['ПВ'])
+                    break
+    
+    tree.bind('<Double-1>', on_double_click)
 
 
 def find_schedule_window_for_order_time(warehouse, pv, weekday_name, order_hour, warehouse_id=None, branch_id=None):
@@ -2255,7 +2723,15 @@ def show_supplier_details(supplier, warehouse, pv=None):
     
     # Функция для определения окна для заказа
     def get_window_for_order(order_row):
-        """Определить окно расписания для заказа (первое подходящее)"""
+        """
+        Определить окно расписания для заказа.
+        
+        Логика:
+        - Заказ попадает в окно, если время заказа <= время "Заказ до" этого окна
+          и > времени "Заказ до" предыдущего окна
+        - Если заказ сделан ПОСЛЕ последнего окна дня - он попадает в ПЕРВОЕ окно
+          следующего дня (т.к. доставка будет на следующий день)
+        """
         order_day_name = order_row.get('День_недели', '')
         order_time = order_row.get('Время заказа позиции')
         
@@ -2266,21 +2742,30 @@ def show_supplier_details(supplier, warehouse, pv=None):
         if weekday_num == 0:
             return None
         
-        # Получаем все окна этого дня, сортируем по времени
-        day_windows = []
-        for (day, time_slot), sched in schedule_index.items():
-            if day == weekday_num:
-                try:
-                    h, m = map(int, time_slot.split(':'))
-                    minutes = h * 60 + m
-                    day_windows.append((minutes, sched, time_slot))
-                except:
-                    pass
+        # Вспомогательная функция для получения окон дня
+        def get_day_windows(day_num):
+            windows = []
+            for (day, time_slot), sched in schedule_index.items():
+                if day == day_num:
+                    try:
+                        h, m = map(int, time_slot.split(':'))
+                        minutes = h * 60 + m
+                        windows.append((minutes, sched, time_slot))
+                    except:
+                        pass
+            windows.sort(key=lambda x: x[0])
+            return windows
+        
+        day_windows = get_day_windows(weekday_num)
         
         if not day_windows:
+            # Нет окон в этот день - проверяем следующий день
+            next_day_num = (weekday_num % 7) + 1
+            next_day_windows = get_day_windows(next_day_num)
+            if next_day_windows:
+                # Возвращаем первое окно следующего дня
+                return (next_day_windows[0][1], next_day_windows[0][2])
             return None
-        
-        day_windows.sort(key=lambda x: x[0])  # Сортируем по времени
         
         # Время заказа в минутах
         order_minutes = order_time.hour * 60 + order_time.minute
@@ -2292,11 +2777,24 @@ def show_supplier_details(supplier, warehouse, pv=None):
                 return (sched, time_slot)
             prev_window_minutes = window_minutes
         
-        # Если заказ после всех окон - возвращаем None (или можно вернуть последнее)
+        # Заказ ПОСЛЕ последнего окна дня - попадает в первое окно СЛЕДУЮЩЕГО дня
+        # (т.к. доставка будет уже на следующий день)
+        next_day_num = (weekday_num % 7) + 1
+        next_day_windows = get_day_windows(next_day_num)
+        if next_day_windows:
+            return (next_day_windows[0][1], next_day_windows[0][2])
+        
+        # Fallback: если нет окон на следующий день, возвращаем последнее окно текущего дня
+        # (чтобы заказ не потерялся)
+        if day_windows:
+            return (day_windows[-1][1], day_windows[-1][2])
+        
         return None
     
     # Распределяем заказы по окнам (каждый заказ только в первое подходящее окно)
     orders_by_window = {}  # (day_num, time_slot) -> DataFrame
+    unassigned_orders = []  # Заказы без окна
+    
     for _, order_row in subset_wd.iterrows():
         window_info = get_window_for_order(order_row)
         if window_info:
@@ -2306,10 +2804,17 @@ def show_supplier_details(supplier, warehouse, pv=None):
             if key not in orders_by_window:
                 orders_by_window[key] = []
             orders_by_window[key].append(order_row)
+        else:
+            unassigned_orders.append(order_row)
     
     # Преобразуем списки в DataFrame
     for key in orders_by_window:
         orders_by_window[key] = pd.DataFrame(orders_by_window[key])
+    
+    # Подсчёт распределённых заказов
+    total_orders = len(subset_wd)
+    assigned_orders = sum(len(df) for df in orders_by_window.values())
+    unassigned_count = len(unassigned_orders)
     
     # Создаём заголовок сетки - дни недели как столбцы
     header_bg = '#1a237e'
@@ -2456,14 +2961,43 @@ def show_supplier_details(supplier, warehouse, pv=None):
     
     # Статистика внизу
     summary_parts = [f"📋 Окон: {schedule_count}"]
+    summary_parts.append(f"📦 Заказов: {assigned_orders}/{total_orders}")
+    if unassigned_count > 0:
+        summary_parts.append(f"⚠️ Без окна: {unassigned_count}")
     if problems_count > 0:
         summary_parts.append(f"❌ Проблем: {problems_count}")
     if warnings_count > 0:
         summary_parts.append(f"⚠️ Предупреждений: {warnings_count}")
-    
-    summary_color = COLORS['danger'] if problems_count > 0 else (COLORS['warning'] if warnings_count > 0 else COLORS['success'])
+
+    has_issues = problems_count > 0 or unassigned_count > 0
+    summary_color = COLORS['danger'] if has_issues else (COLORS['warning'] if warnings_count > 0 else COLORS['success'])
     tk.Label(frame_weekday, text=" | ".join(summary_parts),
             font=("Segoe UI", 9, "bold"), fg=summary_color).pack(pady=5)
+    
+    # Если есть нераспределённые заказы - выводим предупреждение
+    if unassigned_count > 0:
+        warn_frame = tk.Frame(frame_weekday, bg='#fff3e0')
+        warn_frame.pack(fill='x', padx=10, pady=2)
+        
+        # Анализируем причины
+        reasons = []
+        missing_weekday = sum(1 for o in unassigned_orders if not o.get('День_недели'))
+        missing_time = sum(1 for o in unassigned_orders if pd.isna(o.get('Время заказа позиции')))
+        no_schedule = unassigned_count - missing_weekday - missing_time
+        
+        if missing_time > 0:
+            reasons.append(f"нет времени заказа: {missing_time}")
+        if missing_weekday > 0:
+            reasons.append(f"нет дня недели: {missing_weekday}")
+        if no_schedule > 0:
+            reasons.append(f"нет подходящего окна: {no_schedule}")
+        
+        warn_text = f"⚠️ {unassigned_count} заказов не распределены по окнам"
+        if reasons:
+            warn_text += f" ({', '.join(reasons)})"
+        
+        tk.Label(warn_frame, text=warn_text,
+                font=("Segoe UI", 8), bg='#fff3e0', fg=COLORS['warning']).pack(pady=3)
     
     # === Вкладка 3: По ПВ ===
     frame_pv = ttk.Frame(notebook)
@@ -3341,6 +3875,7 @@ def apply_pv_filter(event=None):
     
     update_stats_display()
     update_raw_data_display()
+    update_supply_chain_map()
     update_status(f"🏬 Фильтр: {selected} | Записей: {len(df_current):,}", "info")
 
 pv_filter_combo.bind('<<ComboboxSelected>>', apply_pv_filter)
@@ -3781,6 +4316,41 @@ scrollbar_raw_h.grid(row=1, column=0, sticky='ew')
 tree_frame_raw.grid_rowconfigure(0, weight=1)
 tree_frame_raw.grid_columnconfigure(0, weight=1)
 
+
+# --- Вкладка 4: Карта поставок ---
+frame_map = ttk.Frame(notebook)
+notebook.add(frame_map, text="🗺️ Карта поставок")
+
+map_info = tk.Frame(frame_map, bg='#e3f2fd')
+map_info.pack(fill='x', padx=10, pady=10)
+
+tk.Label(map_info, text="🗺️ Визуализация цепочки поставок: Склад поставщика → ПВ\n"
+        "Размер узла = количество заказов. Цвет: 🟢 ≥80% вовремя, 🟠 60-80%, 🔴 <60%",
+        font=("Segoe UI", 9), bg='#e3f2fd', fg=COLORS['text'], justify='left').pack(padx=10, pady=8)
+
+map_header = tk.Frame(frame_map, bg=COLORS['bg'])
+map_header.pack(fill='x', padx=10)
+
+# Кнопки действий
+map_buttons = tk.Frame(map_header, bg=COLORS['bg'])
+map_buttons.pack(side='left')
+
+tk.Button(map_buttons, text="🔴 Проблемные", command=show_problematic_routes, bg=COLORS['danger'], fg='white',
+          font=("Segoe UI", 9), width=14).pack(side='left', padx=3)
+tk.Button(map_buttons, text="🔥 Популярные", command=show_popular_routes, bg=COLORS['info'], fg='white',
+          font=("Segoe UI", 9), width=14).pack(side='left', padx=3)
+tk.Button(map_buttons, text="🔄 Обновить", command=update_supply_chain_map, bg=COLORS['success'], fg='white',
+          font=("Segoe UI", 9), width=11).pack(side='left', padx=3)
+
+lbl_map_count = tk.Label(map_header, text="Направлений: 0", font=("Segoe UI", 9, "bold"),
+                        bg=COLORS['bg'], fg=COLORS['primary'])
+lbl_map_count.pack(side='right')
+
+# Frame для графа
+supply_chain_frame = tk.Frame(frame_map, bg=COLORS['bg'])
+supply_chain_frame.pack(fill='both', expand=True, padx=10, pady=5)
+
+
 # === FOOTER ===
 footer = tk.Frame(root, bg='#eceff1')
 footer.pack(fill='x')
@@ -3809,4 +4379,12 @@ def auto_load_schedules():
 # Автозагрузка расписания
 auto_load_schedules()
 
-root.mainloop()
+# Запуск главного цикла с обработкой прерываний
+try:
+    root.mainloop()
+except KeyboardInterrupt:
+    print("\nПрограмма завершена пользователем.")
+    sys.exit(0)
+except Exception as e:
+    print(f"\nКритическая ошибка: {e}")
+    sys.exit(1)

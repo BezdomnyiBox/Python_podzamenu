@@ -3,8 +3,13 @@ name: Build Windows EXE
 on:
   # Запуск вручную из GitHub
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия релиза (например: v2.1.0)'
+        required: false
+        type: string
   
-  # Или при пуше тега версии
+  # При пуше тега версии (например: git tag v2.1.0 && git push origin v2.1.0)
   push:
     tags:
       - 'v*'
@@ -33,22 +38,55 @@ jobs:
         working-directory: delivery_analytics
         shell: cmd
         run: |
-          dir
           python -m PyInstaller "ML_Delivery_Analytics.spec" --clean --noconfirm
+      
+      - name: Get version from tag or input
+        id: get_version
+        run: |
+          if "%{{ github.event.inputs.version }}" NEQ "" (
+            echo "version=%{{ github.event.inputs.version }}" >> $env:GITHUB_OUTPUT
+          ) else if "%{{ startsWith(github.ref, 'refs/tags/') }}" == "true" (
+            echo "version=%{{ github.ref_name }}" >> $env:GITHUB_OUTPUT
+          ) else (
+            echo "version=dev-%{{ github.sha }}" >> $env:GITHUB_OUTPUT
+          )
+        shell: cmd
       
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ML_Delivery_Analytics_Windows
+          name: ML_Delivery_Analytics_Windows-${{ steps.get_version.outputs.version }}
           path: delivery_analytics/dist/ML_Delivery_Analytics.exe
-          retention-days: 30
+          retention-days: 90
       
-      - name: Create Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create Release (on tag or manual with version)
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != ''
         uses: softprops/action-gh-release@v2
         with:
           files: delivery_analytics/dist/ML_Delivery_Analytics.exe
-          generate_release_notes: true
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: ML Delivery Analytics ${{ steps.get_version.outputs.version }}
+          body: |
+            ## 🚀 ML Delivery Analytics ${{ steps.get_version.outputs.version }}
+            
+            ### 📦 Что нового:
+            - Добавлена карта цепочки поставок (Поставщик → ПВ)
+            - Исправлена проблема с распределением заказов по окнам расписания
+            - Улучшена визуализация данных
+            
+            ### 📥 Установка:
+            1. Скачайте `ML_Delivery_Analytics.exe`
+            2. Запустите файл (не требует установки)
+            3. При первом запуске выберите период для анализа
+            
+            ### ⚙️ Системные требования:
+            - Windows 10/11
+            - Интернет-соединение для загрузки данных из CRM
+            
+            ### 📝 Изменения:
+            ${{ github.event.head_commit.message }}
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

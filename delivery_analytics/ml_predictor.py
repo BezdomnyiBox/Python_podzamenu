@@ -485,13 +485,6 @@ class DeliveryMLPredictor:
                 except (KeyError, IndexError):
                     fact_time_val = pd.NaT
                 
-                # Отладочный вывод для первой строки
-                if len(examples) == 0:
-                    print(f"DEBUG: Извлечение данных для первого заказа:")
-                    print(f"  order_time_val: {order_time_val} (type: {type(order_time_val)}, pd.notna: {pd.notna(order_time_val)})")
-                    print(f"  plan_time_val: {plan_time_val} (type: {type(plan_time_val)}, pd.notna: {pd.notna(plan_time_val)})")
-                    print(f"  fact_time_val: {fact_time_val} (type: {type(fact_time_val)}, pd.notna: {pd.notna(fact_time_val)})")
-                
                 # Форматируем даты и времена
                 order_date = ''
                 order_time = ''

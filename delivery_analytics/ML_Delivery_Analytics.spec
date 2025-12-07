@@ -79,6 +79,11 @@ a = Analysis(
         'openpyxl',
         'openpyxl.styles',
         
+        # Графы
+        'networkx',
+        'networkx.algorithms',
+        'networkx.classes',
+        
         # Локальный модуль
         'ml_predictor',
     ] + sklearn_hidden + scipy_hidden,
