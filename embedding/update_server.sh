@@ -13,6 +13,13 @@ REPO_URL="https://github.com/BezdomnyiBox/Python_podzamenu.git"
 BRANCH="main"
 SERVICE_NAME="embedding-api"
 
+# Проверяем наличие переменной окружения для sudo пароля
+if [ -z "$SERVER_SUDO_PASSWORD" ]; then
+    echo "⚠️  Переменная окружения SERVER_SUDO_PASSWORD не установлена"
+    echo "Экспортируйте её перед запуском: export SERVER_SUDO_PASSWORD='your_password'"
+    echo "Или добавьте в ~/.bashrc для постоянного использования"
+fi
+
 echo "🚀 Обновление проекта на сервере $SERVER_USER@$SERVER_HOST..."
 echo "📦 Репозиторий: $REPO_URL"
 echo "🌿 Ветка: $BRANCH"
@@ -56,13 +63,17 @@ ssh $SERVER_USER@$SERVER_HOST << EOF
     pip install --upgrade pip --quiet
     pip install -r requirements.txt --quiet
     
-    # Перезапускаем сервис
+    # Перезапускаем сервис (если настроен sudo без пароля или передан пароль)
     if systemctl is-active --quiet $SERVICE_NAME.service 2>/dev/null; then
         echo "🔄 Перезапускаем сервис..."
-        sudo systemctl restart $SERVICE_NAME.service
+        if [ -n "\$SUDO_PASSWORD" ]; then
+            echo "\$SUDO_PASSWORD" | sudo -S systemctl restart $SERVICE_NAME.service 2>/dev/null
+        else
+            sudo systemctl restart $SERVICE_NAME.service 2>/dev/null || echo "⚠️  Для перезапуска нужны права sudo"
+        fi
         sleep 2
         
-        if sudo systemctl is-active --quiet $SERVICE_NAME.service; then
+        if sudo systemctl is-active --quiet $SERVICE_NAME.service 2>/dev/null; then
             echo "✅ Сервис успешно перезапущен!"
             
             # Проверяем работу
@@ -71,7 +82,7 @@ ssh $SERVER_USER@$SERVER_HOST << EOF
             curl -s http://127.0.0.1:8000/test && echo "" || echo "⚠️  API не отвечает"
         else
             echo "❌ Ошибка при перезапуске сервиса"
-            sudo systemctl status $SERVICE_NAME.service --no-pager -l
+            sudo systemctl status $SERVICE_NAME.service --no-pager -l 2>/dev/null || echo "Не удалось получить статус"
         fi
     else
         echo "⚠️  Сервис $SERVICE_NAME.service не найден или не запущен"
@@ -80,7 +91,7 @@ ssh $SERVER_USER@$SERVER_HOST << EOF
     
     echo ""
     echo "📊 Статус сервиса:"
-    sudo systemctl status $SERVICE_NAME.service --no-pager -l || echo "Сервис не настроен"
+    sudo systemctl status $SERVICE_NAME.service --no-pager -l 2>/dev/null || echo "Сервис не настроен"
 EOF
 
 echo ""
