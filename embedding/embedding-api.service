@@ -1,0 +1,16 @@
+[Unit]
+Description=Embedding API Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/embedding-api/embedding
+Environment="PATH=/opt/embedding-api/embedding/venv/bin"
+ExecStart=/opt/embedding-api/embedding/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+

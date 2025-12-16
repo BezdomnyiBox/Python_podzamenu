@@ -1,0 +1,93 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+
+# Сборка Docker образа (опционально)
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG -t $CI_REGISTRY_IMAGE:latest .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+    - docker push $CI_REGISTRY_IMAGE:latest
+  only:
+    - main
+    - master
+    - develop
+
+# Деплой на сервер
+deploy:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client rsync
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H $SERVER_HOST >> ~/.ssh/known_hosts
+  script:
+    - |
+      ssh $SERVER_USER@$SERVER_HOST << EOF
+        set -e
+        export DEPLOY_PATH="$DEPLOY_PATH"
+        export CI_REPOSITORY_URL="$CI_REPOSITORY_URL"
+        export CI_COMMIT_REF_NAME="$CI_COMMIT_REF_NAME"
+        
+        cd \$DEPLOY_PATH || exit 1
+        
+        # Создаем директорию если её нет
+        mkdir -p \$DEPLOY_PATH
+        
+        # Клонируем или обновляем репозиторий
+        if [ -d ".git" ]; then
+          echo "Обновляем существующий репозиторий..."
+          git fetch origin
+          git reset --hard origin/\$CI_COMMIT_REF_NAME
+          git clean -fd
+        else
+          echo "Клонируем репозиторий..."
+          git clone \$CI_REPOSITORY_URL .
+          git checkout \$CI_COMMIT_REF_NAME
+        fi
+        
+        # Переходим в директорию приложения
+        cd embedding || exit 1
+        
+        # Создаем виртуальное окружение если его нет
+        if [ ! -d "venv" ]; then
+          echo "Создаем виртуальное окружение..."
+          python3 -m venv venv
+        fi
+        
+        # Активируем виртуальное окружение и устанавливаем зависимости
+        echo "Устанавливаем зависимости..."
+        source venv/bin/activate
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        
+        # Перезапускаем сервис (если используется systemd)
+        if systemctl is-active --quiet embedding-api.service 2>/dev/null; then
+          echo "Перезапускаем сервис..."
+          sudo systemctl restart embedding-api.service
+        else
+          echo "Сервис embedding-api.service не найден. Запустите вручную."
+        fi
+        
+        echo "Деплой завершен успешно!"
+      EOF
+  only:
+    - main
+    - master
+  environment:
+    name: production
+    url: http://$SERVER_HOST:$SERVER_PORT
+
