@@ -1,26 +1,21 @@
 #!/bin/bash
 
-# Скрипт для развертывания на удаленном сервере через SSH
-# Клонирует репозиторий с GitHub и настраивает как внутренний микросервис
-# Использование: ./deploy_remote.sh [user] [server_host] [github_repo_url] [deploy_path] [port]
+# Первоначальная настройка проекта на сервере podzamenu
+# Использование: ./setup_server.sh
 
 set -e
 
-SERVER_USER=${1:-"user"}
-SERVER_HOST=${2:-"your-server.com"}
-GITHUB_REPO=${3:-"https://github.com/your-username/your-repo.git"}
-DEPLOY_PATH=${4:-"/opt/embedding-api"}
-APP_DIR="embedding"
-PORT=${5:-8000}
+SERVER_USER="dev"
+SERVER_HOST="podzamenu"
+DEPLOY_PATH="/media/ssd3/python_projects"
+REPO_URL="https://github.com/BezdomnyiBox/Python_podzamenu.git"
+BRANCH="main"
 SERVICE_NAME="embedding-api"
+PORT=8000
 
-echo "🚀 Развертывание на удаленном сервере $SERVER_USER@$SERVER_HOST..."
-echo "📦 Репозиторий: $GITHUB_REPO"
-echo "📁 Путь развертывания: $DEPLOY_PATH"
-echo "🔌 Порт: $PORT"
+echo "🚀 Первоначальная настройка проекта на сервере $SERVER_USER@$SERVER_HOST..."
 echo ""
 
-# Выполняем развертывание на сервере
 ssh $SERVER_USER@$SERVER_HOST << EOF
     set -e
     
@@ -35,21 +30,20 @@ ssh $SERVER_USER@$SERVER_HOST << EOF
     
     # Клонируем или обновляем репозиторий
     if [ -d ".git" ]; then
-        echo "🔄 Обновляем существующий репозиторий..."
+        echo "🔄 Репозиторий уже существует, обновляем..."
         git fetch origin
-        git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
-        git clean -fd
+        git checkout $BRANCH
+        git pull origin $BRANCH
     else
         echo "📥 Клонируем репозиторий с GitHub..."
-        git clone $GITHUB_REPO .
+        git clone $REPO_URL .
+        git checkout $BRANCH
     fi
     
+    echo "🌿 Используем ветку: $BRANCH"
+    
     # Переходим в директорию приложения
-    if [ -d "$APP_DIR" ]; then
-        cd $APP_DIR
-    else
-        echo "⚠️  Директория $APP_DIR не найдена. Используем корневую директорию."
-    fi
+    cd embedding
     
     # Создаем виртуальное окружение
     if [ ! -d "venv" ]; then
@@ -60,15 +54,14 @@ ssh $SERVER_USER@$SERVER_HOST << EOF
     # Устанавливаем зависимости
     echo "📥 Устанавливаем зависимости Python..."
     source venv/bin/activate
-    pip install --upgrade pip --quiet
+    pip install --upgrade pip
     pip install -r requirements.txt
     
     # Создаем systemd сервис
     echo "⚙️  Настраиваем systemd сервис..."
     CURRENT_DIR=\$(pwd)
-    SERVICE_FILE="/tmp/${SERVICE_NAME}.service"
     
-    cat > \$SERVICE_FILE << SERVICE_EOF
+    cat > /tmp/${SERVICE_NAME}.service << SERVICE_EOF
 [Unit]
 Description=Embedding API Service (Internal Microservice)
 After=network.target
@@ -89,8 +82,8 @@ WantedBy=multi-user.target
 SERVICE_EOF
     
     # Копируем сервис файл
-    sudo cp \$SERVICE_FILE /etc/systemd/system/${SERVICE_NAME}.service
-    rm -f \$SERVICE_FILE
+    sudo cp /tmp/${SERVICE_NAME}.service /etc/systemd/system/
+    rm -f /tmp/${SERVICE_NAME}.service
     
     # Перезагружаем systemd
     sudo systemctl daemon-reload
@@ -125,8 +118,10 @@ SERVICE_EOF
     echo "   Рестарт: sudo systemctl restart ${SERVICE_NAME}.service"
     echo ""
     echo "🌐 Сервис доступен только на localhost: http://127.0.0.1:$PORT"
+    echo "📁 Путь к проекту: $DEPLOY_PATH/embedding"
 EOF
 
 echo ""
-echo "🎉 Развертывание завершено!"
+echo "🎉 Настройка завершена!"
 echo "🔒 Сервис работает как внутренний микросервис на localhost:$PORT"
+
