@@ -4,37 +4,59 @@ from pydantic import BaseModel
 import numpy as np
 import re
 
-model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-
 app = FastAPI()
 
-# Инициализация интентов с несколькими вариантами для лучшей классификации
-INTENTS = {
+# Тексты интентов (будем кодировать по требованию)
+INTENT_TEXTS = {
     "DELIVERY": [
-        model.encode("Вопрос о доставке через транспортную компанию"),
-        model.encode("Когда доставят заказ"),
-        model.encode("Отследить доставку"),
-        model.encode("Отследить доставку заказа"),
-        model.encode("Трек номер доставки"),
-        model.encode("Статус доставки заказа"),
-        model.encode("Где находится заказ в пути"),
-        model.encode("Транспортная компания доставка"),
-        model.encode("Отслеживание посылки"),
-        model.encode("Где мой заказ в доставке"),
-        model.encode("Трек номер"),
-        model.encode("Отследить посылку"),
+        "Вопрос о доставке через транспортную компанию",
+        "Когда доставят заказ",
+        "Отследить доставку",
+        "Отследить доставку заказа",
+        "Трек номер доставки",
+        "Статус доставки заказа",
+        "Где находится заказ в пути",
+        "Транспортная компания доставка",
+        "Отслеживание посылки",
+        "Где мой заказ в доставке",
+        "Трек номер",
+        "Отследить посылку",
     ],
     "ORDER_INFO": [
-        model.encode("Вопрос о заказе общая информация"),
-        model.encode("Статус заказа"),
-        model.encode("Информация о заказе"),
-        model.encode("Хочу узнать про заказ"),
-        model.encode("Мой заказ информация"),
-        model.encode("Проверить заказ"),
-        model.encode("Детали заказа"),
-        model.encode("Информация о моем заказе"),
+        "Вопрос о заказе общая информация",
+        "Статус заказа",
+        "Информация о заказе",
+        "Хочу узнать про заказ",
+        "Мой заказ информация",
+        "Проверить заказ",
+        "Детали заказа",
+        "Информация о моем заказе",
     ],
 }
+
+# Ленивая загрузка модели
+_model = None
+
+def get_model():
+    """Ленивая загрузка модели - загружается только при первом использовании"""
+    global _model
+    if _model is None:
+        _model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    return _model
+
+# Кэшированные эмбеддинги интентов
+_intent_embeddings = None
+
+def get_intent_embeddings():
+    """Ленивая инициализация эмбеддингов интентов"""
+    global _intent_embeddings
+    if _intent_embeddings is None:
+        model = get_model()
+        _intent_embeddings = {
+            intent: [model.encode(text) for text in texts]
+            for intent, texts in INTENT_TEXTS.items()
+        }
+    return _intent_embeddings
 
 def cosine(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
@@ -60,16 +82,23 @@ def extract_order_number(text: str) -> str | None:
 class TextRequest(BaseModel):
     text: str
 
+@app.get("/test")
+def test():
+    return {"status": "ok", "message": "Server is working"}
+
 @app.post("/classify")
 def classify(request: TextRequest):
     text = request.text
+    model = get_model()
     emb = model.encode(text)
+    
+    intent_embeddings_dict = get_intent_embeddings()
 
     best_intent = None
     best_score = 0
 
     # Для каждого интента берем максимальный score среди всех его вариантов
-    for intent, intent_embeddings in INTENTS.items():
+    for intent, intent_embeddings in intent_embeddings_dict.items():
         # Если это список эмбеддингов, берем максимальный score
         if isinstance(intent_embeddings, list):
             max_score = max(cosine(emb, intent_emb) for intent_emb in intent_embeddings)
