@@ -35,6 +35,9 @@ Thumbs.db
 chromedriver.exe
 chromedriver
 
+# WhatsApp Chrome session (не коммитить — там сессия)
+whatsapp/chrome_profile/
+
 # PyInstaller
 build/
 dist/

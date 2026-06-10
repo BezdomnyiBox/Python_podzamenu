@@ -21,6 +21,15 @@
 ├── photo_tools/                # Работа с фото
 │   └── Фотки_CRM.py            # Обработка .jpg файлов
 │
+├── whatsapp/                   # WhatsApp Web через Selenium (альтернатива Wazzup API)
+│   ├── app.py                  # FastAPI HTTP-сервис (отладка)
+│   ├── worker.py               # Опрос очереди CRM и отправка
+│   ├── crm_client.py           # HTTP-клиент к Symfony API
+│   ├── login.py                # Первичная авторизация по QR
+│   ├── sender.py               # Отправка сообщений
+│   ├── symfony_reference/      # Схема БД и PHP для CRM
+│   └── windows/                # Автозапуск на Windows
+│
 ├── requirements.txt            # Зависимости проекта
 └── README.md                   # Документация
 ```
@@ -77,8 +86,55 @@ pip install -r requirements.txt
 **Photo Manager** - утилита для работы с .jpg файлами.
 
 - Очистка имён от спецсимволов
-- Фильтрация по артикулам из Excel
+- Фильтрация по артикулов из Excel
 - Организация по папкам
+
+### whatsapp/
+
+**WhatsApp Selenium API** — отправка сообщений через WhatsApp Web без Wazzup.
+
+> ⚠️ Неофициальный способ: риск бана номера, сессия может слететь. Используйте отдельный тестовый номер.
+
+**Быстрый старт:**
+
+```bash
+cd "/home/vladimir/Рабочий стол/PythonPodzamenu/Python_podzamenu"
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # задайте WHATSAPP_API_KEY
+
+# 1. Авторизация (один раз, откроется Chrome с QR)
+python -m whatsapp.login
+
+# 2. Запуск воркера (опрос CRM)
+python -m whatsapp.worker
+
+# Опционально: локальный HTTP API для тестов
+python -m whatsapp.app
+```
+
+**Автозапуск на Windows:** `whatsapp\windows\install_autostart.bat`
+
+**Сборка отдельного .exe:** `whatsapp\windows\build_exe.bat` (только на Windows), см. `whatsapp/windows/BUILD.md`
+
+**API на стороне CRM (Symfony):** см. `whatsapp/symfony_reference/README.md`
+
+**Отправка через HTTP:**
+
+```bash
+curl -X POST http://127.0.0.1:8765/send \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: change-me-to-secret-key" \
+  -d '{"phone": "+79001234567", "text": "Тестовое сообщение"}'
+```
+
+**Проверка сессии:**
+
+```bash
+curl -H "X-API-Key: change-me-to-secret-key" http://127.0.0.1:8765/status
+```
+
+Переменные окружения — в `.env.example`.
 
 ## Требования
 

@@ -1,0 +1,19 @@
+# Фрагмент для config/packages/security.yaml
+
+security:
+    firewalls:
+        whatsapp_agent:
+            pattern: ^/api/whatsapp/
+            stateless: true
+            custom_authenticators:
+                - App\Security\WhatsappAgentAuthenticator
+
+# config/services.yaml
+parameters:
+    whatsapp.agent_token: '%env(WHATSAPP_AGENT_TOKEN)%'
+    whatsapp.agent_id: '%env(WHATSAPP_AGENT_ID)%'
+
+services:
+    App\Security\WhatsappAgentAuthenticator:
+        arguments:
+            $agentToken: '%whatsapp.agent_token%'
